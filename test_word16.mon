@@ -1,0 +1,5 @@
+load word16.bin 1000
+goto 1000
+mem 2000:2100
+mem 2000
+quit
