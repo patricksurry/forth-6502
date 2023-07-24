@@ -2,15 +2,19 @@
 
     INCLUDE "word16.asm"
 
+  MAC INCPC
+    ADDWCW PC, #2, PC
+  ENDM
+
   MAC NEXT
     ; indirect threading: PC has the address of the next codeword's address
     ; the codeword contains the address of adapter/interpreter used to execute the word
     ; we jump to the target codeword's code after incrementing PC
     ; leaving AX containing the address of the codeword
     CPYIWW PC, AX       ; now AX contains the codeword's address
-    ADDWCW PC, #2, PC   ; increment the PC so it points at the next codeword address to execute
+    INCPC               ; next codeword to execute
     ; we need to jump to the address stored at the address stored in AX
-    CPYIWW AX, BX        ; now BX has the interpreter address
+    CPYIWW AX, BX       ; now BX has the interpreter address
     JMP (BX)            ; run the word's interpreter code
     word #$0000  ; TODO DEBUG
   ENDM
@@ -29,7 +33,8 @@ QUIT:
     brk
 
 cold_start:
-    WORD ONE
+    WORD LIT
+    WORD #3
     WORD QUADRUPLE
     WORD QUIT
 
@@ -44,18 +49,20 @@ DOCOL:
 
 ; native subroutines
     SUBROUTINE
+; when we've finished a Forth word, we just recover the old PC and proceed
 ECOL:
-    ; when we've finished a Forth word, we just recover the old PC and proceed
     WORD code_ECOL
 code_ECOL:
     POPW RP, PC
     NEXT
 
     SUBROUTINE
-ONE:
-    WORD code_ONE
-code_ONE:
-    PUSHC SP, #1
+; push the next word as a constant and skip it
+LIT:
+    WORD code_LIT
+code_LIT:
+    PUSHIW SP, PC   ; copy literal to stack
+    INCPC           ; and skip it
     NEXT
 
     SUBROUTINE
