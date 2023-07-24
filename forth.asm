@@ -1,114 +1,94 @@
-    processor 6502
+; bootstrap a simple 16-bit Forth
 
-    MACRO INCWP
-    ; INCWP sp
-    clc
-    lda {1}
-    adc #2
-    sta {1}
-    bcc .done
-    ldx #1
-    inc {1},x
-.done:
-    ENDM
+    INCLUDE "word16.asm"
 
-    MACRO DECWP
-    ; DECWP sp
-    sec
-    lda {1}
-    sbc #2
-    bcc .done
-    ldx #1
-    dec {1},x
-.done:
-    ENDM
+  MAC NEXT
+    ; indirect threading: PC has the address of the next codeword's address
+    ; the codeword contains the address of adapter/interpreter used to execute the word
+    ; we jump to the target codeword's code after incrementing PC
+    ; leaving AX containing the address of the codeword
+    CPYIWW PC, AX       ; now AX contains the codeword's address
+    ADDWCW PC, #2, PC   ; increment the PC so it points at the next codeword address to execute
+    ; we need to jump to the address stored at the address stored in AX
+    CPYIWW AX, BX        ; now BX has the interpreter address
+    JMP (BX)            ; run the word's interpreter code
+    word #$0000  ; TODO DEBUG
+  ENDM
 
-    MACRO PUSHW
-    ; PUSHW sp srcp
-    ; push word from scrp to stack and increment sp
-    ldy #1
-.next:
-    lda {2},y
-    sta ({1}),y
-    dey
-    bpl .next
-    INCWP {1}
-    ENDM
-
-    MACRO POPW
-    ; POPW sp
-    ; decrement sp and pop word to ACC
-    DECWP {1}
-    ldy #1
-.next:
-    lda ({1}),y
-    sta ACC,y
-    dey
-    bpl .next
-    ENDM
-
-; Zero page variables in an uninitialised segment
-    seg.U variables
-    org $80
-
-PC word
-PCI word
-SP word
-RSP word
-
-    MACRO NEXT
-    ; jump to the address which the address in PC points to
-    ; while incrementing PC
-    ldy #2
-.next:
-    dey
-    lda (PC),y
-    sta PCI,y       ; copy (PC) => PCI
-    bne .next
-    INCWP PC         ; inc PC
-    JMP (PCI)       ; jmp (PCI)
-    ENDM
 
     seg code
     org $2000
 
 MAIN:
-    lda #0
-    sta SP
-    lda #$10
-    sta SP+1
+    SETWC SP, #$400
+    SETWC RP, #$600
+    SETWC PC, #cold_start
+    NEXT
 
-    ldy #0
-    ldx #3
-    txa
-    sta (SP),y
-    inx
-    txa
-    iny
-    sta (SP),y
-
-    INCWP SP
-    PUSHW SP, $1000
-
+QUIT:
     brk
+
+cold_start:
+    WORD ONE
+    WORD QUADRUPLE
+    WORD QUIT
+
+DOCOL:
+    ; interpreter for a Forth word, which has a codeword followed by a list of codeword addresses
+    ; AX contains the address of the codeword, so we just need to push the current PC
+    ; which tells us what to do after we're finished this word,
+    ; and continue executing words at AX+2
+    PUSHW RP, PC
+    ADDWCW AX, #2, PC
+    NEXT
+
+; native subroutines
+    SUBROUTINE
+ECOL:
+    ; when we've finished a Forth word, we just recover the old PC and proceed
+    WORD code_ECOL
+code_ECOL:
+    POPW RP, PC
+    NEXT
 
     SUBROUTINE
 ONE:
-    WORD ONE
-    ldy #0
-    lda #1
-    sta (ACC),y
-    lda #0
-    iny
-    sta (ACC),y
-    PUSHW SP, ACC
+    WORD code_ONE
+code_ONE:
+    PUSHC SP, #1
     NEXT
-
 
     SUBROUTINE
 DUP:
-    POPW SP
-    PUSHW SP, ACC
-    PUSHW SP, ACC
+    WORD code_DUP
+code_DUP:
+    POPW SP, AX
+    PUSHW SP, AX
+    PUSHW SP, AX
     NEXT
 
+    SUBROUTINE
+PLUS:
+    WORD code_PLUS
+code_PLUS:
+    POPW SP, AX
+    POPW SP, BX
+    ADDWWW AX, BX, CX
+    PUSHW SP, CX
+    NEXT
+
+; forth dict entries
+
+    SUBROUTINE
+DOUBLE:
+    WORD DOCOL
+    WORD DUP
+    WORD PLUS
+    WORD ECOL
+
+    SUBROUTINE
+QUADRUPLE:
+    WORD DOCOL
+    WORD DOUBLE
+    WORD DOUBLE
+    WORD ECOL

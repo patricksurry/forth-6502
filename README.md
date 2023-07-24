@@ -10,5 +10,6 @@ Setup
     py65mon --batch test_word16.mon
 
 
+    ../dasm/bin/dasm forth.asm -oforth.bin -lforth.lst -sforth.sym -f
 
 https://en.wikipedia.org/wiki/Pearson_hashing

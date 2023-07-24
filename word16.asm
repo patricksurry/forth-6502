@@ -1,17 +1,34 @@
-; define a bunch of 16-bit MACs
-; assemble like ../dasm/bin/dasm forth.asm -oword16.bin -lword16.lst -f3 -DTESTS
+; ---------------------------------------------------------------------
+;
+; define a bunch of macros to mimic simple 16 bit opcodes.
+; included by forth.asm to pretend we're using a 16-bit CPU
+;
+; Each opcode indicates its arguments like W - word, IW - indirect word, C - constant
+;
+;   SET[W|IW]C - set word to 16-bit constant
+;   CPY[W|IW][W|IW] - copy [indirect] word to [indirect] word
+;   CMP[W|IW][C|W|IW] - compare two words
+;   [INC|DEC]W, DECW - increment or decrement a word (no indirect form)
+;   [ADD|SUB][W|IW][C|W|IW][W|IW] - add or subtract two words to form a third
+;   PUSH[C|W|IW], POP[W|IW] - push or pop from a stack
+;
+; for standalone unit tests, assemble like
+;
+;   bin/dasm forth.asm -oword16.bin -lword16.lst -f3 -DTESTS
+;
+; ---------------------------------------------------------------------
 
     processor 6502
 
-    ; Zero page variables in an uninitialised segment
+    ; Define zero page "registers" in an uninitialised segment
     seg.U variables
     org $80
 
-PC word
-SP word
-RP word
+PC word     ; program counter
+SP word     ; data stack pointer
+RP word     ; return stack pointer
 
-AX word
+AX word     ; some temp registers
 BX word
 CX word
 
@@ -392,7 +409,7 @@ done:
   IF {3} == -1
     _SETWC {1}, {2}, 1
   ELSE
-    _CPYWW {2}, {1}, 1, {3}
+    _CPYWW {2}, {1}, {3}, 1
   EIF
     ADDWCW {1}, #2, {1}
   ENDM
@@ -442,9 +459,6 @@ done:
 
   IFCONST TESTS
 
-    seg code
-    org $1000
-
 test_index set #1
 
   MAC _EXPECTWC
@@ -479,8 +493,11 @@ test_index set test_index + 1
     _EXPECTWC {1}, {2}, {3}, 1
   ENDM
 
+    ; define tests themselves
+    seg code
+    org $1000
+
     SETWC SP, #$200
-    ; start with an expected failure
     EXPECTWC SP, #$1234, "FAIL"  ; an expected failure
 
     SETIWC SP, #$123
@@ -507,7 +524,14 @@ test_index set test_index + 1
 
     PUSHC SP, #3
     PUSHC SP, #$104
+    EXPECTWC SP, #$206, "PUSHC"
     POPW SP, AX
+    EXPECTIWC SP, #$104, "POP1"
+    EXPECTWC AX, #$104, "POP2"
+    PUSHW SP, AX
+    EXPECTWC SP, #$206, "PUSHW"
+    POPW SP, AX
+    EXPECTWC AX, #$104, "POP3"
     POPW SP, BX
 
     EXPECTWC SP, #$202, "PUSHPOP1"
