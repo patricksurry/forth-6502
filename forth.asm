@@ -16,7 +16,6 @@
     ; we need to jump to the address stored at the address stored in AX
     CPYIWW AX, BX       ; now BX has the interpreter address
     JMP (BX)            ; run the word's interpreter code
-    word #$0000  ; TODO DEBUG
   ENDM
 
 
