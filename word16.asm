@@ -242,23 +242,35 @@ done:
   ELSE
     sta {4}
   EIF
-  IF {5} | {6}
-    iny
-  EIF
-  IF {5}
-    lda ({2}),y
+  IF >{3} == 0 && {2} == {4}
+    ; adding single byte constant to self
+    IF {0}
+      bcs .done
+      dec {2}+1
+    ELSE
+      bcc .done
+      inc {2}+1
+    EIF
+.done
   ELSE
-    lda {2}+1
-  EIF
-  IF {0}
-    sbc >{3}
-  ELSE
-    adc >{3}
-  EIF
-  IF {6}
-    sta ({4}),y
-  ELSE
-    sta {4}+1
+    IF {5} | {6}
+      iny
+    EIF
+    IF {5}
+      lda ({2}),y
+    ELSE
+      lda {2}+1
+    EIF
+    IF {0}
+      sbc >{3}
+    ELSE
+      adc >{3}
+    EIF
+    IF {6}
+      sta ({4}),y
+    ELSE
+      sta {4}+1
+    EIF
   EIF
   ENDM
 
