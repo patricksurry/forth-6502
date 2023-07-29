@@ -1,6 +1,6 @@
 load word16.bin 1000
-goto 1000
+goto 2000
 width 72
-mem 2000:2100 ascii
-mem 2000 noascii
+mem 1000/1ff ascii
+mem 1000 noascii
 quit

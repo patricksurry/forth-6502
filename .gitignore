@@ -1,3 +1,5 @@
 *.lst
 *.sym
+*.sym.json
+*.disasm
 *.bin

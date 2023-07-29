@@ -1,0 +1,7 @@
+load forth.bin 1000
+goto 2000  ; word16 tests
+goto 4000  ; forth tests
+width 72
+mem 1000/1ff ascii
+mem 1000 noascii
+quit

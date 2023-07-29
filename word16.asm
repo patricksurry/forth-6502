@@ -20,32 +20,44 @@
 
     processor 6502
 
-    ; Define zero page "registers" in an uninitialised segment
-    seg.U variables
+    seg.U vars  ; Define zero page "registers" in an uninitialised segment
     org $80
 
 PC word     ; program counter
 SP word     ; data stack pointer
 RP word     ; return stack pointer
 
-AX word     ; some temp registers
-BX word
-CX word
+AW word     ; some public registers
+BW word
+CW word
+
+_TW word    ; internal registers used by macros
+
+; hints for the disassembler
+PCH = PC+1
+SPH = SP+1
+RPH = RP+1
+AWH = AW+1
+BWH = BW+1
+CWH = CW+1
+_TWH = _TW+1
 
 ; ---------------------------------------------------------------------
 ; set SET
 
   MAC _SETWC
-    ; set word to a constant with given mode
-    ; _SETC AX, $1234, 0=abs/1=ind
-    lda <{2}
+    ; set word with given mode to a constant
+    ; _SETWC AW, #$1234, 0=abs/1=ind
+    lda #<{2}
   IF {3}
     ldy #0
     sta ({1}),y
   ELSE
     sta {1}
   EIF
-    lda >{2}
+  IF <{2} != >{2}
+    lda #>{2}
+  EIF
   IF {3}
     iny
     sta ({1}),y
@@ -55,10 +67,40 @@ CX word
   ENDM
 
   MAC SETWC
+.SETWC:
     _SETWC {1}, {2}, 0
   ENDM
   MAC SETIWC
+.SETIWC:
     _SETWC {1}, {2}, 1
+  ENDM
+
+  MAC _SETWA
+    ; set word with given mode to accumulator
+    ; _SETWC AW, 0=abs/1=ind
+    ; stomps A, and Y if ind
+  IF {2}
+    ldy #0
+    sta ({1}),y
+  ELSE
+    sta {1}
+  EIF
+  lda #0
+  IF {2}
+    iny
+    sta ({1}),y
+  ELSE
+    sta {1}+1
+  EIF
+  ENDM
+
+  MAC SETWA
+.SETWA:
+    _SETWA {1}, 0
+  ENDM
+  MAC SETIWA
+.SETIWA:
+    _SETWA {1}, 1
   ENDM
 
 ; ---------------------------------------------------------------------
@@ -66,7 +108,7 @@ CX word
 
   MAC _CPYWW
     ; copy a word from one address to another with given modes
-    ; _CPY__ AX, BX, 0=abs/1=ind, 0=abs/1=ind
+    ; _CPY__ AW, BW, 0=abs/1=ind, 0=abs/1=ind
   IF {3} | {4}
     ldy #0
   EIF
@@ -96,15 +138,19 @@ CX word
   ENDM
 
   MAC CPYWW
+.CPYWW
     _CPYWW {1}, {2}, 0, 0
   ENDM
   MAC CPYWIW
+.CPYWIW
     _CPYWW {1}, {2}, 0, 1
   ENDM
   MAC CPYIWW
+.CPYIWW
     _CPYWW {1}, {2}, 1, 0
   ENDM
   MAC CPYIWIW
+.CPYIWIW
     _CPYWW {1}, {2}, 1, 1
   ENDM
 
@@ -112,14 +158,17 @@ CX word
 ; compare CMP
 
   MAC _CMPWC
-    ; _CMPWC AX, #$1234, 0=abs/1=ind
+    ; _CMPWC AW, #$1234, 0=abs/1=ind
+    ; sets zero flag based on W == C
   IF {3}
     ldy #1
     lda ({1}),y
   ELSE
     lda {1}+1
   EIF
-    cmp >{2}
+  IF >{2}
+    cmp #>{2}
+  EIF
     bne .done
   IF {3}
     dey
@@ -127,19 +176,23 @@ CX word
   ELSE
     lda {1}
   EIF
-    cmp <{2}
+  IF <{2}
+    cmp #<{2}
+  EIF
 .done:
   ENDM
 
   MAC CMPWC
+.CMPWC
     _CMPWC {1}, {2}, 0
   ENDM
   MAC CMPIWC
+.CMPIWC
     _CMPWC {1}, {2}, 1
   ENDM
 
   MAC _CMPWW
-    ; _CMPWW AX, BX, 0=abs/1=ind, 0=abs/1=ind
+    ; _CMPWW AW, BW, 0=abs/1=ind, 0=abs/1=ind
   IF {3} | {4}
     ldy #1
   EIF
@@ -171,15 +224,19 @@ done:
   ENDM
 
   MAC CMPWW
+.CMPWW
     _CMPWW {1}, {2}, 0, 0
   ENDM
   MAC CMPWIW
+.CMPWIW
     _CMPWW {1}, {2}, 0, 1
   ENDM
   MAC CMPIWW
+.CMPIWW
     _CMPWW {1}, {2}, 1, 0
   ENDM
   MAC CMPIWIW
+.CMPIWIW
     _CMPWW {1}, {2}, 1, 1
   ENDM
 
@@ -197,6 +254,7 @@ done:
 ; increment / decrement INC/DEC - note no indirect version
 
   MAC INCW
+.INCW
     ; increment a two-byte value
     ; INCW adr
     inc {1}
@@ -206,9 +264,10 @@ done:
   ENDM
 
   MAC DECW
+.DECW
     ; decrement a two-byte value
     lda {1}
-    bne .done
+    bne .done   ; dec high byte if low is zero
     dec {1}+1
 .done:
     dec {1}
@@ -218,7 +277,7 @@ done:
 ; add/subtract ADD/SUB
 
   MAC _PMWCW
-    ; _PMWCW 0=adc/1=sbc, AX, #$1234, CX, 0=abs/1=ind, 0=abs/1=ind
+    ; _PMWCW 0=adc/1=sbc, AW, #$1234, CW, 0=abs/1=ind, 0=abs/1=ind
   IF {5} | {6}
     ldy #0
   EIF
@@ -233,9 +292,9 @@ done:
     lda {2}
   EIF
   IF {0}
-    sbc <{3}
+    sbc #<{3}
   ELSE
-    adc <{3}
+    adc #<{3}
   EIF
   IF {6}
     sta ({4}),y
@@ -262,9 +321,9 @@ done:
       lda {2}+1
     EIF
     IF {0}
-      sbc >{3}
+      sbc #>{3}
     ELSE
-      adc >{3}
+      adc #>{3}
     EIF
     IF {6}
       sta ({4}),y
@@ -275,33 +334,41 @@ done:
   ENDM
 
   MAC ADDWCW
+.ADDWCW
     _PMWCW 0, {1}, {2}, {3}, 0, 0
   ENDM
   MAC ADDWCIW
+.ADDWCIW
     _PMWCW 0, {1}, {2}, {3}, 0, 1
   ENDM
   MAC ADDIWCW
+.ADDIWCW
     _PMWCW 0, {1}, {2}, {3}, 1, 0
   ENDM
   MAC ADDIWCIW
+.ADDIWCIW
     _PMWCW 0, {1}, {2}, {3}, 1, 1
   ENDM
 
   MAC SUBWCW
+.SUBWCW
     _PMWCW 1, {1}, {2}, {3}, 0, 0
   ENDM
   MAC SUBWCIW
+.SUBWCIW
     _PMWCW 1, {1}, {2}, {3}, 0, 1
   ENDM
   MAC SUBIWCW
+.SUBIWCW
     _PMWCW 1, {1}, {2}, {3}, 1, 0
   ENDM
   MAC SUBIWCIW
+.SUBIWCIW
     _PMWCW 1, {1}, {2}, {3}, 1, 1
   ENDM
 
   MAC _PMWWW
-    ; _PMWWW 0=adc/1=sbc, AX, BX, CX, 0=abs/1=ind, 0=abs/1=ind, 0=abs/1=ind
+    ; _PMWWW 0=adc/1=sbc, AW, BW, CW, 0=abs/1=ind, 0=abs/1=ind, 0=abs/1=ind
   IF {5} | {6} | {7}
     ldy #0
   EIF
@@ -364,151 +431,242 @@ done:
   ENDM
 
   MAC ADDWWW
+.ADDWWW
     _PMWWW 0, {1}, {2}, {3}, 0, 0, 0
   ENDM
   MAC ADDWWIW
+.ADDWWIW
     _PMWWW 0, {1}, {2}, {3}, 0, 0, 1
   ENDM
   MAC ADDWIWW
+.ADDWIWW
     _PMWWW 0, {1}, {2}, {3}, 0, 1, 0
   ENDM
   MAC ADDWIWIW
+.ADDWIWIW
     _PMWWW 0, {1}, {2}, {3}, 0, 1, 1
   ENDM
   MAC ADDIWWW
+.ADDIWWW
     _PMWWW 0, {1}, {2}, {3}, 1, 0, 0
   ENDM
   MAC ADDIWWIW
+.ADDIWWIW
     _PMWWW 0, {1}, {2}, {3}, 1, 0, 1
   ENDM
   MAC ADDIWIWW
+.ADDIWIWW
     _PMWWW 0, {1}, {2}, {3}, 1, 1, 0
   ENDM
   MAC ADDIWIWIW
+.ADDIWIWIW
     _PMWWW 0, {1}, {2}, {3}, 1, 1, 1
   ENDM
 
   MAC SUBWWW
+.SUBWWW
     _PMWWW 1, {1}, {2}, {3}, 0, 0, 0
   ENDM
   MAC SUBWWIW
+.SUBWWIW
     _PMWWW 1, {1}, {2}, {3}, 0, 0, 1
   ENDM
   MAC SUBWIWW
+.SUBWIWW
     _PMWWW 1, {1}, {2}, {3}, 0, 1, 0
   ENDM
   MAC SUBWIWIW
+.SUBWIWIW
     _PMWWW 1, {1}, {2}, {3}, 0, 1, 1
   ENDM
   MAC SUBIWWW
+.SUBIWWW
     _PMWWW 1, {1}, {2}, {3}, 1, 0, 0
   ENDM
   MAC SUBIWWIW
+.SUBIWWIW
     _PMWWW 1, {1}, {2}, {3}, 1, 0, 1
   ENDM
   MAC SUBIWIWW
+.SUBIWIWW
     _PMWWW 1, {1}, {2}, {3}, 1, 1, 0
   ENDM
   MAC SUBIWIWIW
+.SUBIWIWIW
     _PMWWW 1, {1}, {2}, {3}, 1, 1, 1
+  ENDM
+
+  MAC ADDWAW
+.ADDWAW
+    clc
+    adc {1}
+    sta {2}
+  IF {1} != {2}
+    lda {1}+1
+    sta {2}+1
+  EIF
+    bcc .nocarry
+    inc {2}+1
+.nocarry
+  ENDM
+
+  MAC MULWAW
+.MULWAW
+    tay
+  IF {1} == {2}
+    CPYWW {1}, _TW
+  EIF
+    SETWC {2}, #0
+    ldx #7
+    tya
+.loop:
+    ASLWW {2},{2}
+    asl
+    bcc .next
+    tay
+  IF {1} == {2}
+    ADDWWW {2},_TW,{2}
+  ELSE
+    ADDWWW {2},{1},{2}
+  EIF
+    tya
+.next:
+    dex
+    bpl .loop
+  ENDM
+
+; ---------------------------------------------------------------------
+; LSR, ASL
+
+  MAC _SHFTWW
+    ; _SHFTWW {1}, {2}, -1=left,1=right
+  IF {1} != {2}
+    CPYWW {1}, {2}
+  EIF
+  IF {3} < 0
+    asl {2}
+    rol {2}+1
+  ELSE
+    lsr {2}+1
+    ror {2}
+  EIF
+  ENDM
+
+  MAC ASLWW
+.ASLWW
+    _SHFTWW {1}, {2}, -1
+  ENDM
+
+  MAC LSRWW
+.LSRWW
+    _SHFTWW {1}, {2}, 1
+  ENDM
+
+;TODO ROL/ROR
+
+; ---------------------------------------------------------------------
+; NOT (logical not)
+
+  MAC NOTWW
+.NOTWW
+    ; NOTWW AW, BW
+    lda {1}
+    eor #$ff
+    sta {2}
+    lda {1}+1
+    eor #$ff
+    sta {2}+1
+  ENDM
+
+  MAC NEGWW
+.NEGWW
+    ; NEGWW AW, BW
+    NOTWW {1}, {2}
+    ADDWCW {2}, #1, {2}
   ENDM
 
 ; ---------------------------------------------------------------------
 ; PUSH, POP
+;
+; currently implemented with stack growing downward,
+; and SP pointing to the latest valid element
+
+  MAC GROW
+.GROW
+    ; GROW SP, 1
+    lda #-[{2} * 2]
+    dec {1}+1         ; subtract 256 then add acc as unsigned
+    ADDWAW {1}, {1}
+  ENDM
+
+  MAC SHRINK
+.SHRINK
+    ; SHRINK SP, 1
+    lda #[{2} * 2]
+    ADDWAW {1}, {1}
+  ENDM
 
   MAC _PUSHW
-    ; _PUSHW SP, AX, 0=abs/1=ind/-1=imm
+    ; _PUSHW SP, AW, 0=abs/1=ind/-1=imm
+    GROW {1}, 1
   IF {3} == -1
     _SETWC {1}, {2}, 1
   ELSE
     _CPYWW {2}, {1}, {3}, 1
   EIF
-    ADDWCW {1}, #2, {1}
   ENDM
 
   MAC PUSHW
+.PUSHW
     _PUSHW {1}, {2}, 0
   ENDM
   MAC PUSHIW
+.PUSHIW
     _PUSHW {1}, {2}, 1
   ENDM
   MAC PUSHC
+.PUSHC
     _PUSHW {1}, {2}, -1
   ENDM
 
+  MAC PUSHA
+.PUSHA
+    tax
+    GROW {1}, 1
+    txa
+    SETIWA {1}
+  ENDM
+
   MAC _POPW
-    ; _POPW SP, AX, 0=abs/1=ind
-    SUBWCW {1}, #2, {1}
+    ; _POPW SP, AW, 0=abs/1=ind
     _CPYWW {1}, {2}, 1, {3}
+    SHRINK {1}, 1
   ENDM
 
   MAC POPW
+.POPW
     _POPW {1}, {2}, 0
   ENDM
   MAC POPIW
+.POPIW
     _POPW {1}, {2}, 1
   ENDM
 
-; ---------------------------------------------------------------------
-; Unit tests
-;
-; assemble with -DTESTS to generate test code @ $1000
-; with test outputs aligned at next $1000, e.g. $2000
-;
-; Result shows total failure count in first byte
-; Each test result is displayed in 16 bytes with first byte 0=ok/1=fail
-; followed by the test name:
-;
-; 2000: 01 00 66 61 69 6c 75 72 65 73 00 00 00 00 00 00  ..failures......
-; 2010: 01 00 46 41 49 4c 00 00 00 00 00 00 00 00 00 00  ..FAIL..........
-; 2020: 00 00 53 45 54 49 57 43 00 00 00 00 00 00 00 00  ..SETIWC........
-; 2030: 00 00 53 45 54 49 57 43 49 00 00 00 00 00 00 00  ..SETIWCI.......
-; 2040: 00 00 44 45 43 57 00 00 00 00 00 00 00 00 00 00  ..DECW..........
-; 2050: 00 00 49 4e 43 57 00 00 00 00 00 00 00 00 00 00  ..INCW..........
-; 2060: 00 00 41 44 44 57 57 57 00 00 00 00 00 00 00 00  ..ADDWWW........
-; 2070: 00 00 41 44 44 57 43 57 00 00 00 00 00 00 00 00  ..ADDWCW........
-
+  MAC POPA
+    ; pop stack item with low byte => A
+    ; stomps Y
+.POPA
+    ldy #0
+    lda ({1}),y
+    SHRINK {1}, 1
+  ENDM
 
   IFCONST TESTS
+    INCLUDE "unittest.asm"
 
-test_index set #1
-
-  MAC _EXPECTWC
-    ; _EXPECTWC AX, #$1234, "test name", 0=abs/1=ind
-    clc
-    bcc .test
-    align 16
-.result:
-    dc.w 0
-    dc.b {3}
-    align 16
-.test:
-    _CMPWC {1}, {2}, {4}
-    beq .ok
-    ; mark this test as failed and increment overall count
-    inc .result
-    INCW output_base
-.ok:
-    ldx #$0f
-.copy:
-    lda .result,x
-    sta [output_base+test_index*16],x
-    dex
-    bpl .copy
-test_index set test_index + 1
-  ENDM
-
-  MAC EXPECTWC
-    _EXPECTWC {1}, {2}, {3}, 0
-  ENDM
-  MAC EXPECTIWC
-    _EXPECTWC {1}, {2}, {3}, 1
-  ENDM
-
-    ; define tests themselves
-    seg code
-    org $1000
-
+    align #$1000
+    SUBROUTINE
+test_word16:
     SETWC SP, #$200
     EXPECTWC SP, #$1234, "FAIL"  ; an expected failure
 
@@ -523,42 +681,52 @@ test_index set test_index + 1
     EXPECTWC SP, #$201, "INCW"
     DECW SP
 
-    SETWC AX, #$1ff
-    SETWC BX, #$102
-    ADDWWW AX, BX, CX
-    EXPECTWC CX, #$301, "ADDWWW"
+    SETWC AW, #$1ff
+    SETWC BW, #$102
+    ADDWWW AW, BW, CW
+    EXPECTWC CW, #$301, "ADDWWW"
 
-    SUBWCW CX, #$1ff, BX
-    EXPECTWC BX, #$102, "SUBWCW"
+    SUBWCW CW, #$1ff, AW
+    EXPECTWC AW, #$102, "SUBWCW"
 
-    ADDWCW SP, #2, SP
-    EXPECTWC SP, #$202, "ADDWCW"
+    NEGWW AW, BW
+    ADDWWW AW, BW, CW
+    EXPECTWC CW, #0, "NEGWW"
 
-    PUSHC SP, #3
-    PUSHC SP, #$104
-    EXPECTWC SP, #$206, "PUSHC"
-    POPW SP, AX
-    EXPECTIWC SP, #$104, "POP1"
-    EXPECTWC AX, #$104, "POP2"
-    PUSHW SP, AX
-    EXPECTWC SP, #$206, "PUSHW"
-    POPW SP, AX
-    EXPECTWC AX, #$104, "POP3"
-    POPW SP, BX
+    GROW SP, 1
+    EXPECTWC SP, [$200-2], "ADDWCW"
+    SHRINK SP, 1
 
-    EXPECTWC SP, #$202, "PUSHPOP1"
-    EXPECTWC AX, #$104, "PUSHPOP2"
-    EXPECTWC BX, #3, "PUSHPOP3"
+    SETWC AW, #234
+    ASLWW AW, BW
+    EXPECTWC BW, #468, "ASLWW"
+
+    SETwC AW, #123
+    lda #35
+    ADDWAW AW, BW
+    EXPECTWC BW, #158, "ADDWAW"
+
+    lda #35
+    MULWAW AW, AW
+    EXPECTWC AW, #4305, "MULWAW"
+
+    PUSHC SP, 3
+    PUSHC SP, $104
+    EXPECTWC SP, [$200-4], "PUSHC"
+    POPW SP, AW
+    EXPECTIWC SP, 3, "POP1"
+    EXPECTWC AW, $104, "POP2"
+    PUSHW SP, AW
+    EXPECTWC SP, [$200-4], "PUSHW"
+    POPW SP, AW
+    EXPECTWC AW, $104, "POP3"
+    POPW SP, BW
+
+    EXPECTWC SP, $200, "PUSHPOP1"
+    EXPECTWC AW, #$104, "PUSHPOP2"
+    EXPECTWC BW, #3, "PUSHPOP3"
 
     ; end of tests
     brk
-
-    ; start of test report
-    align #$1000
-output_base equ .
-    dc.w 0  ; count of failures
-    dc.b "failures"
-    align 16
-    ; individual tests results will be appended here
-
+.fill.d:
   EIF
