@@ -30,6 +30,7 @@ RP word     ; return stack pointer
 AW word     ; some public registers
 BW word
 CW word
+DW word
 
 _TW word    ; internal registers used by macros
 
@@ -40,6 +41,7 @@ RPH = RP+1
 AWH = AW+1
 BWH = BW+1
 CWH = CW+1
+DWH = DW+1
 _TWH = _TW+1
 
 ; ---------------------------------------------------------------------
@@ -48,7 +50,7 @@ _TWH = _TW+1
   MAC _SETWC
     ; set word with given mode to a constant
     ; _SETWC AW, #$1234, 0=abs/1=ind
-    lda #<{2}
+    lda #<[{2}]
   IF {3}
     ldy #0
     sta ({1}),y
@@ -56,7 +58,7 @@ _TWH = _TW+1
     sta {1}
   EIF
   IF <{2} != >{2}
-    lda #>{2}
+    lda #>[{2}]
   EIF
   IF {3}
     iny
@@ -77,7 +79,7 @@ _TWH = _TW+1
 
   MAC _SETWA
     ; set word with given mode to accumulator
-    ; _SETWC AW, 0=abs/1=ind
+    ; _SETWA AW, 0=abs/1=ind
     ; stomps A, and Y if ind
   IF {2}
     ldy #0
@@ -167,7 +169,7 @@ _TWH = _TW+1
     lda {1}+1
   EIF
   IF >{2}
-    cmp #>{2}
+    cmp #>[{2}]
   EIF
     bne .done
   IF {3}
@@ -177,7 +179,7 @@ _TWH = _TW+1
     lda {1}
   EIF
   IF <{2}
-    cmp #<{2}
+    cmp #<[{2}]
   EIF
 .done:
   ENDM
@@ -292,9 +294,9 @@ done:
     lda {2}
   EIF
   IF {0}
-    sbc #<{3}
+    sbc #<[{3}]
   ELSE
-    adc #<{3}
+    adc #<[{3}]
   EIF
   IF {6}
     sta ({4}),y
@@ -321,9 +323,9 @@ done:
       lda {2}+1
     EIF
     IF {0}
-      sbc #>{3}
+      sbc #>[{3}]
     ELSE
-      adc #>{3}
+      adc #>[{3}]
     EIF
     IF {6}
       sta ({4}),y
@@ -497,6 +499,7 @@ done:
   ENDM
 
   MAC ADDWAW
+    ; ADDWAW {1}, {2} :: {1} + A => {2} # A
 .ADDWAW
     clc
     adc {1}
@@ -510,6 +513,11 @@ done:
 .nocarry
   ENDM
 
+; ---------------------------------------------------------------------
+; MUL, DIV
+
+;TODO finish me
+
   MAC MULWAW
 .MULWAW
     tay
@@ -520,7 +528,7 @@ done:
     ldx #7
     tya
 .loop:
-    ASLWW {2},{2}
+    ASLW {2}
     asl
     bcc .next
     tay
@@ -535,34 +543,50 @@ done:
     bpl .loop
   ENDM
 
+  MAC DIVWWWW
+.DIVWWWW
+    ; DIV :: AW, BW -> QW, RW ## X
+    SETWC {3}, 0
+    SETWC {4}, 0
+    ldx #15
+.loop:
+    ASLW {1}
+    ROLW {4}
+    SUBWWW {4},{2},_TW
+    bcc .skip
+    CPYWW _TW, {4}
+.skip:
+    ROLW {3}
+    dex
+    bpl .loop
+  ENDM
+
 ; ---------------------------------------------------------------------
-; LSR, ASL
+; LSR, ASL, ROL, ROR
 
-  MAC _SHFTWW
-    ; _SHFTWW {1}, {2}, -1=left,1=right
-  IF {1} != {2}
-    CPYWW {1}, {2}
-  EIF
-  IF {3} < 0
-    asl {2}
-    rol {2}+1
-  ELSE
-    lsr {2}+1
-    ror {2}
-  EIF
+  MAC ASLW
+.ASLW
+    asl {1}
+    rol {1}+1
   ENDM
 
-  MAC ASLWW
-.ASLWW
-    _SHFTWW {1}, {2}, -1
+  MAC ROLW
+.ROLW
+    rol {1}
+    rol {1}+1
   ENDM
 
-  MAC LSRWW
-.LSRWW
-    _SHFTWW {1}, {2}, 1
+  MAC LSRW
+.LSRW
+    lsr {1}+1
+    ror {1}
   ENDM
 
-;TODO ROL/ROR
+  MAC RORW
+.RORW
+    ror {1}+1
+    ror {1}
+  ENDM
 
 ; ---------------------------------------------------------------------
 ; NOT (logical not)
@@ -593,7 +617,7 @@ done:
 
   MAC GROW
 .GROW
-    ; GROW SP, 1
+    ; GROW SP, {2} :: SP - 2*{2} => SP ## A
     lda #-[{2} * 2]
     dec {1}+1         ; subtract 256 then add acc as unsigned
     ADDWAW {1}, {1}
@@ -629,11 +653,10 @@ done:
     _PUSHW {1}, {2}, -1
   ENDM
 
-  MAC PUSHA
-.PUSHA
-    tax
+  MAC PUSHB
+.PUSHB
     GROW {1}, 1
-    txa
+    lda {2}
     SETIWA {1}
   ENDM
 
@@ -652,13 +675,51 @@ done:
     _POPW {1}, {2}, 1
   ENDM
 
-  MAC POPA
-    ; pop stack item with low byte => A
-    ; stomps Y
-.POPA
+  MAC POPB
+    ; POPB SP, B :: (SP) => B ## Y
+.POPB
     ldy #0
     lda ({1}),y
+    sta {2}
     SHRINK {1}, 1
+  ENDM
+
+  MAC PEEK
+.PEEK
+    ; PEEKW SP, i, AW :: (SP), i => AW ## Y
+    ldy #[{2}*2]
+    lda ({1}),y
+    sta {3}
+    iny
+    lda ({1}),y
+    sta {3}+1
+  ENDM
+
+  MAC POKE
+.POKE
+    ; POKEW SP, i, AW :: AW => (SP), i ## Y
+    ldy #[{2}*2]
+    lda {3}
+    sta ({1}),y
+    iny
+    lda {3}+1
+    sta ({1}),y
+  ENDM
+
+  MAC DUPE
+    ; DUPE SP, i, j :: (SP), i => (SP), j ## A, X, Y
+.DUPE
+    ldy #[{2}*2 + 1]
+    lda ({1}),y
+    tax
+    dey
+    lda ({1}),y
+
+    ldy #[{3}*2]
+    sta ({1}),y
+    txa
+    iny
+    sta ({1}),y
   ENDM
 
   IFCONST TESTS
@@ -667,18 +728,18 @@ done:
     align #$1000
     SUBROUTINE
 test_word16:
-    SETWC SP, #$200
+    SETWC SP, #$400
     EXPECTWC SP, #$1234, "FAIL"  ; an expected failure
 
     SETIWC SP, #$123
-    EXPECTWC $200, #$123, "SETIWC"
+    EXPECTWC $400, #$123, "SETIWC"
     EXPECTIWC SP, #$123, "SETIWCI"
 
     DECW SP
-    EXPECTWC SP, #$1FF, "DECW"
+    EXPECTWC SP, #$3FF, "DECW"
     INCW SP
     INCW SP
-    EXPECTWC SP, #$201, "INCW"
+    EXPECTWC SP, #$401, "INCW"
     DECW SP
 
     SETWC AW, #$1ff
@@ -694,12 +755,12 @@ test_word16:
     EXPECTWC CW, #0, "NEGWW"
 
     GROW SP, 1
-    EXPECTWC SP, [$200-2], "ADDWCW"
+    EXPECTWC SP, $400-2, "ADDWCW"
     SHRINK SP, 1
 
     SETWC AW, #234
-    ASLWW AW, BW
-    EXPECTWC BW, #468, "ASLWW"
+    ASLW AW
+    EXPECTWC AW, #468, "ASLW"
 
     SETwC AW, #123
     lda #35
@@ -710,19 +771,25 @@ test_word16:
     MULWAW AW, AW
     EXPECTWC AW, #4305, "MULWAW"
 
+    SETWC AW, #123
+    SETWC BW, #42
+    DIVWWWW AW, BW, CW, DW
+    EXPECTWC CW, #2, "DIVWWWW_Q"
+    EXPECTWC DW, #39, "DIVWWWW_R"
+
     PUSHC SP, 3
     PUSHC SP, $104
-    EXPECTWC SP, [$200-4], "PUSHC"
+    EXPECTWC SP, $400-4, "PUSHC"
     POPW SP, AW
     EXPECTIWC SP, 3, "POP1"
     EXPECTWC AW, $104, "POP2"
     PUSHW SP, AW
-    EXPECTWC SP, [$200-4], "PUSHW"
+    EXPECTWC SP, $400-4, "PUSHW"
     POPW SP, AW
     EXPECTWC AW, $104, "POP3"
     POPW SP, BW
 
-    EXPECTWC SP, $200, "PUSHPOP1"
+    EXPECTWC SP, $400, "PUSHPOP1"
     EXPECTWC AW, #$104, "PUSHPOP2"
     EXPECTWC BW, #3, "PUSHPOP3"
 

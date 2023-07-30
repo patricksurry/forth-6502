@@ -2,12 +2,18 @@
 ; bootstrap a simple 16-bit Forth for 6502 based on jonesforth
 ; see https://github.com/nornagon/jonesforth/blob/master/jonesforth.S
 
+__VERSION__ = 1
+
     INCLUDE "word16.asm"
 
     seg.U vars
 
-CH byte
+F byte
+I byte
+M byte
 N byte
+
+strbuf.d byte 32
 
     seg code
 
@@ -65,16 +71,20 @@ MAIN:
     NEXT
 
 cold_start.d:
-;    WORD KEY.d
-;    WORD EMIT.d
-    WORD WORD.d
-    WORD NUMBER.d
-    WORD DROP.d  ; drop the err count
-    WORD LIT.d
-    WORD #1
-    WORD PLUS.d
-    WORD QUADRUPLE.d
-    WORD QUIT.d
+;    word KEY.d
+;    word EMIT.d
+    word LIT.d
+    word #7
+    word LIT.d
+    word #42
+    word SWAP.d
+    word DUP.d
+    word WORD.d
+    word NUMBER.d
+    word DROP.d  ; drop the err count
+    word PLUS.d
+    word QUADRUPLE.d
+    word QUIT.d
 
 ; ---------------------------------------------------------------------
 ; macros to define words with appropriate header
@@ -87,39 +97,78 @@ F_LENMASK = 0x1f	; length mask
 link set 0
 
   MAC _DEFWORD
-    ; DEFWORD name, label, flags, 0=native, 1=forth
+    ; _DEFWORD name, label, flags
     ; define a forth word
 .here:
 {2},"_header.d"
-    WORD link
+    word link
 link set .here
-    BYTE [.end.d - .name.d] | {3}
+    byte [.end.d - .name.d] | {3}
 {2},"_name.d":
 .name.d:
-    BYTE {1}
+    byte {1}
 .end.d:
 {2},".d"
   ENDM
 
-  MAC DEFCODE
+  MAC DEFCODE ; name, label, flags
     ; define a native word
     _DEFWORD {1}, {2}, {3}
-    WORD .code
+    word .code
 .code
 {2},"_code"
     ; native assembly should follow, ended by NEXT
   ENDM
 
+  MAC DEFCONST ; name, label, flags, value
+    ; define a constant
+    DEFCODE {1}, {2}, {3}
+    PUSHW SP, {4}
+    NEXT
+  ENDM
+
+  MAC DEFVAR ; name, label, flags, value
+    ; define a variable
+    DEFCODE {1}, {2}, {3}
+vptr set .vptr
+    PUSHW SP, vptr
+    NEXT
+{2},"_value.d":
+.vptr
+    word {4}
+  ENDM
+
   MAC DEFWORD
     ; define a forth word
     _DEFWORD {1}, {2}, {3}
-    WORD DOCOL  ; Forth words use codeword DOCOL
+    word DOCOL  ; Forth words use codeword DOCOL
     ; sequence of word pointers should follow, ended by EXIT
 {2},"_words.d"
   ENDM
 
 ; ---------------------------------------------------------------------
+; core constants
+
+	DEFCONST "VERSION", VERSION, 0, __VERSION__     ; current version of this
+;	DEFCONST "R0", R0, 0, 0		    ; The address of the top of the return stack.
+	DEFCONST "DOCOL", _DOCOL, 0, DOCOL              ; Pointer to DOCOL.
+	DEFCONST "F_IMMED", _F_IMMED, 0, F_IMMED		; Flag values
+	DEFCONST "F_HIDDEN", _F_HIDDEN, 0, F_HIDDEN
+    DEFCONST "F_LENMASK", _F_LENMASK, 0, F_LENMASK
+
+; ---------------------------------------------------------------------
+; core variables
+
+    DEFVAR "STATE", STATE, 0, 0     ; executing = 0 or compiling != 0
+    DEFVAR "LATEST", LATEST, 0, 0   ;TODO latest word in the dictionary
+    DEFVAR "HERE", HERE, 0, 0       ;TODO next free byte of memory
+    DEFVAR "BASE", BASE, 0, 10      ; radix for printing and reading numbers
+
+; ---------------------------------------------------------------------
 ; native word definitions
+
+    DEFCODE "_RTS", _RTS, 0
+    rts
 
     DEFCODE "QUIT", QUIT, 0
     ; TODO fix me
@@ -130,23 +179,110 @@ link set .here
     POPW RP, PC
     NEXT
 
-    ; drop top element of stack
+    ; DROP :: x --
 	DEFCODE "DROP",DROP,0
     SHRINK SP, 1
 	NEXT
 
+    ; SWAP :: x y -- y x
 	DEFCODE "SWAP",SWAP,0
-    POPW SP, AW
-    POPW SP, BW
-    PUSHW SP, AW
-    PUSHW SP, BW
+    PEEK SP, 0, AW
+    DUPE SP, 1, 0
+    POKE SP, 1, AW
 	NEXT
 
+    ; DUP :: x -- x x
     DEFCODE "DUP", DUP, 0
-    POPW SP, AW
-    PUSHW SP, AW
-    PUSHW SP, AW
+    GROW SP, 1
+    DUPE SP, 1, 0
     NEXT
+
+    ; OVER :: x y -- x y x
+    DEFCODE "OVER", OVER, 0
+    GROW SP, 1
+    DUPE SP, 2, 0
+    NEXT
+
+    ; ROT :: x y z -- y z x
+    DEFCODE "ROT", ROT, 0
+    PEEK SP, 2, AW
+    DUPE SP, 1, 2
+    DUPE SP, 0, 1
+    POKE SP, 0, AW
+    NEXT
+
+    ; -ROT :: x y z -- z x y
+    DEFCODE "-ROT", NROT, 0
+    PEEK SP, 0, AW
+    DUPE SP, 1, 0
+    DUPE SP, 2, 1
+    POKE SP, 2, AW
+    NEXT
+
+    ; 2DROP :: x y --
+	DEFCODE "2DROP",2DROP,0
+    SHRINK SP, 2
+	NEXT
+
+    ; 2DUP :: x y -- x y x y
+    DEFCODE "2DUP", 2DUP, 0
+    GROW SP, 2
+    DUPE SP, 3, 1
+    DUPE SP, 2, 0
+    NEXT
+
+    ; 2SWAP :: x y z w -- z w x y
+    DEFCODE "2SWAP", 2SWAP, 0
+    PEEK SP, 0, AW
+    PEEK SP, 1, BW
+    DUPE SP, 2, 0
+    DUPE SP, 3, 1
+    POKE SP, 2, AW
+    POKE SP, 3, BW
+    NEXT
+
+    ; ?DUP :: x -- 0 | x x
+    DEFCODE "?DUP", QDUP, 0
+    CMPIWC SP, #0
+    bne .done
+    GROW SP, 1
+    DUPE SP, 1, 0
+.done:
+    NEXT
+
+    ; + :: x y -- x+y
+    DEFCODE "+", PLUS, 0
+    POPW SP, AW
+    ADDIWWIW SP, AW, SP
+    NEXT
+
+    ; - :: x y -- x-y
+    DEFCODE "-", MINUS, 0
+    POPW SP, AW
+    SUBIWWIW SP, AW, SP
+    NEXT
+
+    ; * :: x y -- x*y
+    DEFCODE "*", MULTIPLY, 0
+    POPW SP, AW
+;TODO
+    ;MULIWWIW SP, AW, SP
+    NEXT
+
+    ; /MOD :: x y -- r q ; with q = x//y, r = remainder
+    DEFCODE "/MOD", DIVMOD, 0
+    POPW SP, AW
+    POPW SP, BW
+;TODO DIVIW ....
+    DIVWWWW AW, BW, CW, DW ; CW is quotient
+    PUSHW SP, DW
+    PUSHW SP, CW
+    NEXT
+
+
+;TODO stack words
+    ; SP@ - return SP
+    ; S0 return SP-2 (next free location)
 
     ; push the next word as a constant and skip it
     DEFCODE "LIT", LIT, 0
@@ -156,11 +292,13 @@ link set .here
 
     DEFCODE "KEY", KEY, 0
     GETC
-    PUSHA SP
+    sta I
+    PUSHB SP, I
     NEXT
 
     DEFCODE "EMIT", EMIT, 0
-    POPA SP
+    POPB SP, I
+    lda I
     PUTC
     NEXT
 
@@ -185,38 +323,34 @@ link set .here
     GETC
     cmp #$21
     bpl .store
-    tya
-    PUSHA SP
+    sty N
+    PUSHB SP, N
     NEXT
 
+    ; parse a number from a string
+    ; char* len -- value err  where err is # of unconverted chars
     DEFCODE "NUMBER", NUMBER, 0
-    ; adr len -- value err  where err is # of unconverted chars
-    jsr _number
-    NEXT
-
-    ;TODO this would be a lot more efficient
-    ; as SP -= 4 ;ADDIW (SP), (SP)+2, (SP)
-    DEFCODE "+", PLUS, 0
-    POPW SP, AW
-    POPW SP, BW
-    ADDWWW AW, BW, CW
-    PUSHW SP, CW
+    POPB SP, N      ; length
+    POPW SP, AW     ; char*
+    jsr parseint    ; (AW, y) => (BW, A)
+    sta N
+    PUSHW SP, BW    ; parsed value
+    PUSHB SP, N     ; number of unconverted chars (0 => success)
     NEXT
 
 ; ---------------------------------------------------------------------
 ; forth word definitions
 
     DEFWORD "DOUBLE", DOUBLE, 0
-    WORD DUP.d
-    WORD PLUS.d
-    WORD EXIT.d
+    word DUP.d
+    word PLUS.d
+    word EXIT.d
 
     DEFWORD "QUADRUPLE", QUADRUPLE, 0
-    WORD DOUBLE.d
-    WORD DOUBLE.d
-    WORD EXIT.d
+    word DOUBLE.d
+    word DOUBLE.d
+    word EXIT.d
 
-strbuf.d byte 32
 
 ; ---------------------------------------------------------------------
 ; helpers
@@ -267,41 +401,16 @@ hashxrl3:
 upcase_mask = #%11011111    ; clears l/c bit
 
 .radixlist.d:
-    byte 0, "BFOX"     ; binary / 'forth' / octal / hex
+    byte "BFOX"     ; binary / 'forth' / octal / hex
 .radixmax.d:
-    byte 10, 2, 4, 8, 16
+    byte 2, 4, 8, 16
     ; coincidentally(!?) if we look at the five lowest bits
     ; the radix character's leading 1-bit corresponds to the base
     ; B = 00010 => 2, [F = 000110 => 3], O = 01111 => 4, X = 11000 => 5
-_number:
-    ; parse a string
-    ; char* length -- value err
-    POPW SP, BW ; length
-    POPW SP, AW ; char*
-    ldy BW
-    sty N
-    lda (AW),y
-    sta CH
-    lda #0
-    sta (AW),y  ; temporarily zero-terminate the string
-    jsr parseint ; (AW, y) => (BW, A)
-    beq .ok
-    ; set <CW to # of unconverted chars = N - K where K is # converted
-    clc     ; force borrow since A = K+1
-    sbc N   ; A = K+1 - N - 1 = K - N
-    eor #$ff
-    adc #1     ; A = N - K
-.ok:
-    SETWA CW
-    lda CH  ; replace temp zero terminator
-    ldy N
-    sta (AW),y
-    PUSHW SP, BW    ; parsed value
-    PUSHW SP, CW    ; number of unconverted chars
-    rts
 
 parseint:
-    ; parse a number from a zero-terminated string of up to 256 bytes like
+    ; parseint :: AX, N => BX, N ## X, Y; F, I, M
+    ; parse a number from a string with length N < 256
     ;
     ;   123, -123, 0b0101010, -0o754, 0xbead
     ;
@@ -310,80 +419,94 @@ parseint:
     ;   [-][1-9][0-9]+
     ;   [-]0[bBoOxX][0-9a-fA-F]+
     ;
-    ; AW points to zero-terminated string to parse
+    ; AW points to string
+    ; N contains length
     ; on return A=0 indicates success, with parsed value in BW
-    ; or A > 0 on failure as # converted chars + 1
-    ldx #0      ; default radix index (decimal)
-    ldy #0      ; character index
+    ; on failure A != 0 as # unconverted chars (-1 if fail by exhausting string)
     SETWC BW, #0    ; initialize result
+    ldy #0          ; character index
+    cpy N
+    beq .invalid
+    sty F           ; sign=0
+    lda BASE_value.d
+    sta M           ; default radix
     lda (AW),y
-    beq .invalid2
     cmp #'-
-    php         ; stash status with Z => negative value
     bne .nosign
     iny
-    lda (AW),y
+    cpy N
     beq .invalid
+    sty F           ; sign=1
+    lda (AW),y
 .nosign:
-    cmp #'0    ; leading 0?
+    cmp #'0         ; leading 0?
     bne .digits
-    iny         ; look for radix
-    lda (AW),y
+    iny             ; look for radix
+    cpy N
     beq .invalid
+    lda (AW),y
     and #upcase_mask
-    ldx #5
+    ldx #4
 .radixloop:
     dex
-    beq .invalid
+    bmi .invalid
     cmp .radixlist.d,x
     bne .radixloop
+    lda .radixmax.d,x
+    sta M
     iny         ; grab initial digit
+    cpy N
+    beq .invalid
     lda (AW),y
-    bne .digits
+    jmp .digits
 .invalid:
-    plp     ; discard negative flag
-.invalid2:
-    iny     ; A = Y+1 != 0
-    tya
+    ; return # of unprocessed chars
+    ; failed on the y-th char, so N-Y unprocessed
+    ; if Y == N (string exhausted) return -1
+    cpy N
+    bne .notlast
+    iny
+.notlast:
+    sty M
+    lda N
+    sec
+    sbc M
     rts
 .digits:
     ; check digit is valid 0 <= d < radix
     sec
     sbc #'0
     bmi .invalid
-    cmp #10
+    cmp #10             ; 0-9 ?
     bmi .checkmax
-    and #upcase_mask
+    and #upcase_mask    ; A-... ?
     sbc #['A - '0 - 10]
 .checkmax:
-    cmp .radixmax.d,x
+    cmp M
     bpl .invalid
-    ; result <- result * radix + digit
-    ; stash x=radix index, y=index, a=digit
-    stx CW
-    sty CW+1
+    ; result := result * radix + digit
+    sty I
     pha
-    lda .radixmax.d,x
+    lda M
     MULWAW BW,BW
     pla
     ADDWAW BW,BW
-    ldx CW
-    ldy CW+1
+    ldy I
     ; next digit
     iny
+    cpy N
+    beq .done
     lda (AW),y
-    bne .digits
+    jmp .digits
 .done:
-    plp
-    bne .positive
-    ; negate value
-    NEGWW BW, BW
+    lda F
+    beq .positive
+    NEGWW BW, BW        ; negate value
 .positive:
-    lda #0
+    lda #0              ; success
     rts
 
 .fill.d:
-
 
 ; ---------------------------------------------------------------------
 ; unit tests
@@ -402,56 +525,81 @@ test_forth:
     jsr hashxrl3
     EXPECTAC #$33, "hashxrl3"
 
-    SETWC AW, strint1.d
+    LDA strint1.d
+    STA N
+    SETWC AW, strint1.d+1
     jsr parseint
     EXPECTWC BW, #1234, "parseint1"
 
-    SETWC AW, #strint2.d
+    LDA strint2.d
+    STA N
+    SETWC AW, strint2.d+1
     jsr parseint
     EXPECTWC BW, #-456, "parseint2"
 
-    SETWC AW, #strint3.d
+    LDA strint3.d
+    STA N
+    SETWC AW, strint3.d+1
     jsr parseint
     EXPECTWC BW, #42, "parseint3"
 
-    SETWC AW, #strint4.d
+    LDA strint4.d
+    STA N
+    SETWC AW, strint4.d+1
     jsr parseint
     EXPECTWC BW, #-492, "parseint4"
 
-    SETWC AW, #strint5.d
+    LDA strint5.d
+    STA N
+    SETWC AW, strint5.d+1
     jsr parseint
     EXPECTWC BW, #48813, "parseint5"
 
-    PUSHW SP, AW
-    PUSHC SP, #6
-    jsr _number
-    POPW SP, BW
-    POPW SP, AW
-    EXPECTWC AW, #48813, "good_number_bw"
-    EXPECTWC BW, #0, "good_number_cw"
+    SETWC SP, #$400
 
-    PUSHC SP, #banana.d
-    PUSHC SP, #6
-    jsr _number
+    SETWC test_word.d, NUMBER.d
+
+    PUSHC SP, strint5.d+1
+    PUSHB SP, strint5.d
+    jsr test_word
     POPW SP, BW
     POPW SP, AW
-    EXPECTWC AW, #0, "bad_number_bw"
-    EXPECTWC BW, #6, "bad_number_cw"
+    EXPECTWC AW, #48813, "ok_NUMBER_val"
+    EXPECTWC BW, #0, "ok_NUMBER_err"
+
+    PUSHC SP, banana.d
+    PUSHC SP, 6
+    jsr test_word
+    POPW SP, BW
+    POPW SP, AW
+    EXPECTWC AW, #0, "bad_NUMBER_val"
+    EXPECTWC BW, #6, "bad_NUMBER_err"
 
     brk
+
+test_word:
+    ; set test_word.d to word under test,
+    ; set up stack appropriately, jsr here
+    SETWC RP, #$600
+    SETWC PC, #test_word.d
+    NEXT
+
+test_word.d:
+    word
+    word _RTS.d
 
 banana.d:
     byte "banana"
 strint1.d:
-    byte "1234",0
+    byte 4, "1234"
 strint2.d:
-    byte "-456",0
+    byte 4, "-456"
 strint3.d:
-    byte "0b00101010",0
+    byte 10, "0b00101010"
 strint4.d:
-    byte "-0o754",0
+    byte 6, "-0o754"
 strint5.d:
-    byte "0xbead",0
+    byte 6, "0xbead"
 
   ENDIF
 

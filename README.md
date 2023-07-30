@@ -20,3 +20,17 @@ To get a clean disassembly:
     python dasmsym2json.py < forth.sym > forth.sym.json
     python ../pydisass6502/disass.py -i forth.bin -o forth.disasm -e forth.sym.json -s 0x1000
 
+
+Forth resources
+
+https://github.com/nornagon/jonesforth/blob/master/jonesforth.S
+https://forth-standard.org/standard/core
+https://skilldrick.github.io/easyforth/
+
+
+6502 resources
+
+https://atariwiki.org/wiki/Wiki.jsp?page=6502%20Coding%20Algorithms%20Macro%20Library
+https://www.masswerk.at/6502/6502_instruction_set.html
+https://www.nesdev.org/wiki/Synthetic_instructions
+https://www.nesdev.org/wiki/6502_assembly_optimisations
