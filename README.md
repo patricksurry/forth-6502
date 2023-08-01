@@ -6,6 +6,17 @@ Setup
 
     conda activate forth
 
+    brew install cl65
+
+    cl65 --verbose --config ld65.cfg -l foo.lst -m foo.map -o foo.bin foo.asm
+
+`--target none` avoids string mangling, -Ln produces symbols with -g
+
+    cl65 --verbose --target none  --config ld65.cfg -g --asm-define TESTS -l word16.lst -m word16.map -Ln word16.sym -o word16.bin word16.asm
+
+    cl65 --verbose --target none --config ld65.cfg -g --asm-define TESTS -l forth.lst -m forth.map -Ln forth.sym -o forth.bin forth.asm
+
+
     ../dasm/bin/dasm word16.asm -oword16.bin -R -lword16.lst -sword16.sym -T1 -f3 -DTESTS
     py65mon --batch test_word16.mon
 

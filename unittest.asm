@@ -16,66 +16,95 @@
 ; 2060: 00 00 41 44 44 57 57 57 00 00 00 00 00 00 00 00  ..ADDWWW........
 ; 2070: 00 00 41 44 44 57 43 57 00 00 00 00 00 00 00 00  ..ADDWCW........
 
-test_index set #1
+test_report := $c000
+        ; this will contain a 16 byte summary
+        ; plus a 16 byte result for each test
 
-    seg code
-    org $1000
-test_report.d equ .
-    dc.w 0  ; count of failures
-    dc.b "failures"
-    align 16
-    ; individual tests results will be appended here
+test_index .set 1
 
-
-  MAC _EXPECTPRE
-    ; _EXPECTPRE "test_label"
-test_,test_index
-    ldx #$ff
-.next
-    inx
-    lda .label.d,x
-    beq .run_test
-    sta [test_report.d + test_index*16 + 2],x
-    bne .next   ; always
-.label.d:
-    byte {1}
-    byte 0
-.run_test:
-  ENDM
+    .macro _EXPECTPRE label
+    .local next, lbl, test
+.ident (.sprintf("test_%03d_%s", test_index, label)):
+        ldx #$ff
+next:
+        inx
+        lda lbl,x
+        beq test
+        sta test_report + test_index*16 + 2,x
+        bne next   ; always
+lbl:    .byte label
+        .byte 0
+test:
+    .endmac
 
     ; test body should store result to _TW, with 0 = success, non-zero = failure
 
-  MAC _EXPECTPOST
-    ; store test result
-    CPYWW _TW, [test_report.d + test_index*16]
-    CMPWC _TW, #0
-    beq .ok
-    ; test failed, increment overall count
-    INCW test_report.d
-.ok:
-test_index set test_index + 1
-  ENDM
+    .macro _EXPECTPOST
+    .local ok
+        ; store test result
+        CPYWW _TW, test_report + test_index*16
+test_index .set test_index + 1
+        CMPWC _TW, 0
+        beq ok
+        ; test failed, increment overall count
+        INCW test_report
+ok:
+    .endmac
 
-  MAC EXPECTWC
-    ; EXPECTWC AW, #$1234, "test_label"
-    _EXPECTPRE {3}
-    SUBWCW {1}, {2}, _TW
-    _EXPECTPOST
-  ENDM
+    .macro EXPECTWC actual, expected, label
+        _EXPECTPRE label
+        SUBWCW actual, expected, _TW
+        _EXPECTPOST
+    .endmac
 
-  MAC EXPECTIWC
-    ; EXPECTIWC AW, #$1234, "test_label"
-    _EXPECTPRE {3}
-    SUBIWCW {1}, {2}, _TW
-    _EXPECTPOST
-  ENDM
+    .macro EXPECTIWC actual, expected, label
+        _EXPECTPRE label
+        SUBIWCW actual, expected, _TW
+        _EXPECTPOST
+    .endmac
 
-  MAC EXPECTAC
-    ; EXPECTAC #42, "test_label"
-    _EXPECTPRE {2}
-    sta _TW
-    lda #$0
-    sta _TW+1
-    _EXPECTPOST
-  ENDM
+    .macro EXPECTAC expected, label
+        sta _TW
+        lda #$0
+        sta _TW+1
+        EXPECTWC _TW, expected, label
+    .endmac
 
+    .macro EXPECTSTR actual, expected, label
+        _EXPECTPRE label
+        lda #0
+        sta _TW
+        sta _TW+1
+        ldy #$ff
+        bne @next
+@strdat:
+        .byte expected, 0
+@next:  iny
+        lda @strdat,y
+        beq @done
+        cmp (actual),y
+        beq @next
+        iny
+        sty _TW
+@done:
+        _EXPECTPOST
+    .endmac
+
+    .ifdef TESTS
+
+    .data
+test_header:
+        .byte 0, 0, "failures"
+        .align 16
+
+    .segment "TEST"
+test_main:
+        ldx #15
+@copy:
+        lda test_header,x
+        sta test_report,x
+        dex
+        bpl @copy
+        ; test suites will follow
+
+    .endif

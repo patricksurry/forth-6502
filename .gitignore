@@ -3,3 +3,5 @@
 *.sym.json
 *.disasm
 *.bin
+*.o
+*.map
