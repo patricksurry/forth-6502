@@ -100,7 +100,7 @@ link .set 0
     .macro _DEFWORD name, label, flags
         ; define a forth word
 ; symbol for linked list
-.ident (.sprintf("_link_%04d", link+1)):
+.ident (.sprintf("__link__%04d", link+1)):
 ; sybmol for debugging
     .ifnblank label
 .ident (.sprintf("%s_header", label)):
@@ -111,7 +111,7 @@ link .set 0
         .word 0
     .else
         ; point to previous word
-        .word .ident (.sprintf("_link_%04d", link))
+        .word .ident (.sprintf("__link__%04d", link))
     .endif
 link .set link + 1
     .ifnblank flags
@@ -190,8 +190,11 @@ vptr:
 ; ---------------------------------------------------------------------
 ; native word definitions
 
+    .ifdef TESTS
         DEFCODE "_RTS"
+        ; used by testword sequence as a subroutine
         rts
+    .endif
 
         DEFCODE "QUIT"
         ; TODO fix me
@@ -288,7 +291,8 @@ qdup_done:
         ; * :: x y -- x*y
         DEFCODE "*", "MULTIPLY"
         POPW SP, AW
-;TODO
+;TODO  this should be a signed multiply (xor sign flags and negate then reapply)
+; set overflow if sign flag gets overwritten, carry if exceed 16bits
         ;MULIWWIW SP, AW, SP
         NEXT
 
@@ -568,9 +572,10 @@ digits:
         bmi invalid
         cmp #10             ; 0-9 ?
         bmi checkmax
-        ;TODO need further check or : to @ behave like digits before A!
-        and #upcase_mask    ; A-... ?
-        sbc #('A' - '0' - 10)
+        and #upcase_mask    ; clear lower case flag
+        cmp #('A' - '0')    ; between 9 and A?
+        bmi invalid
+        sbc #('A' - '0' - 10)   ; 'A' => 'A' - '0' - ('A' - '0' - 10) => 10
 checkmax:
         cmp TMP
         bpl invalid

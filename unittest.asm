@@ -71,22 +71,23 @@ ok:
     .endmac
 
     .macro EXPECTSTR actual, expected, label
+    .local strdat, next, done
         _EXPECTPRE label
         lda #0
         sta _TW
         sta _TW+1
         ldy #$ff
-        bne @next
-@strdat:
+        bne next
+strdat:
         .byte expected, 0
-@next:  iny
-        lda @strdat,y
-        beq @done
+next:  iny
+        lda strdat,y
+        beq done
         cmp (actual),y
-        beq @next
+        beq next
         iny
         sty _TW
-@done:
+done:
         _EXPECTPOST
     .endmac
 

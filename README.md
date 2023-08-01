@@ -1,3 +1,10 @@
+TODO
+
+- signed multiply
+- fix fmtint to check for carry on multiply when finding radix
+- pull out strncopy (smart about direction with overlap) and strncmp from unittest etc
+- implement find; possibly do n-str-n in header so we can backtrack?
+
 
 Setup
     conda create -n forth python=3.9
@@ -10,7 +17,7 @@ Setup
 
     cl65 --verbose --config ld65.cfg -l foo.lst -m foo.map -o foo.bin foo.asm
 
-`--target none` avoids string mangling, -Ln produces symbols with -g
+`--target none` avoids .byte string mangling, -Ln produces symbols with -g
 
     cl65 --verbose --target none  --config ld65.cfg -g --asm-define TESTS -l word16.lst -m word16.map -Ln word16.sym -o word16.bin word16.asm
 
