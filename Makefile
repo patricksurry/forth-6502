@@ -12,4 +12,4 @@ tests: forth sym2py65.py
 	py65mon -l forth.bin -a 800 -b forth.mon
 
 clean:
-	rm *.bin *.lst *.map *.o *.mon
+	rm -f *.bin *.lst *.map *.o *.mon

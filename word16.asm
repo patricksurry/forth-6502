@@ -18,13 +18,14 @@
 ;
 ; ---------------------------------------------------------------------
 
+.ifndef __WORD16__
+__WORD16__ = 1
+
     .setcpu "6502"
     .feature c_comments
 
 ; Define zero page "registers" in an uninitialised segment
     .zeropage
-
-        .res $80
 
 PC:     .res 2    ; program counter
 SP:     .res 2    ; data stack pointer
@@ -37,6 +38,8 @@ DW:     .res 2
 EW:     .res 2
 
 _TW:    .res 2   ; internal registers used by macros
+_F:     .res 1
+    .align 2
 
 ; ---------------------------------------------------------------------
 ; set SET
@@ -294,7 +297,7 @@ done:
     .else
         sta target
     .endif
-    .if >(value) = 0 && .xmatch(source, target)
+    .if .const(value) && >(value) = 0 && .xmatch(source, target)
         ; adding single byte constant to self
         .if op
         bcs done
@@ -362,6 +365,7 @@ done:
 
     .macro _PMWWW op, left, right, target, left_mode, right_mode, target_mode
         ; op 0=adc/1=sbc, mode 0=abs/1=ind
+        ; stomps y; C=16bit carry
     .if left_mode | right_mode | target_mode
         ldy #0
     .endif
@@ -510,13 +514,15 @@ nocarry:
 ;TODO finish me
 
     .macro MULWAW source, target
-        ; target := source * target  ## X, Y
+        ; target := source * A  ## A, X, Y, _F
+        ; unsigned multiply with C=1 indicating unsigned overflow
     .local next, loop
         tay
     .if .xmatch(source, target)
         CPYWW source, _TW
     .endif
         SETWC target, 0
+        sta _F     ; carry = 0
         ldx #7
         tya
 loop:
@@ -530,9 +536,13 @@ loop:
         ADDWWW target,source,target
     .endif
         tya
+        bcc next
+        inc _F     ; unsigned overflow
 next:
         dex
         bpl loop
+        lda _F
+        cmp #1      ; C=1 if _F >= 0
     .endmac
 
     .macro DIVWWWW num, denom, quo, rem
@@ -699,15 +709,15 @@ skip:
         sta (stack),y
     .endmac
 
-.ifdef TESTS
-        .INCLUDE "unittest.asm"
+    .ifdef TESTS
+        .include "unittest.asm"
 
     .segment "TEST"
 
 test_word16:
         SETWC SP, test_word16
         SETWC SP, $400
-        EXPECTWC SP, $1234, "FAIL"  ; an expected failure
+        EXPECTWC SP, $1234, "should fail"
 
         SETIWC SP, $123
         EXPECTWC $400, $123, "SETIWC"
@@ -752,8 +762,8 @@ test_word16:
         SETWC AW, 123
         SETWC BW, 42
         DIVWWWW AW, BW, CW, DW
-        EXPECTWC CW, 2, "DIVWWWW_Q"
-        EXPECTWC DW, 39, "DIVWWWW_R"
+        EXPECTWC CW, 2, "DIVWWWW quo"
+        EXPECTWC DW, 39, "DIVWWWW rem"
 
         PUSHC SP, 3
         PUSHC SP, $104
@@ -773,4 +783,5 @@ test_word16:
 
         ; end of tests
 
+    .endif
 .endif

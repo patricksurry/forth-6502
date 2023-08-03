@@ -1,9 +1,6 @@
 TODO
 
 - signed multiply
-- fix fmtint to check for carry on multiply when finding radix
-- pull out strncopy (smart about direction with overlap) and strncmp from unittest etc
-- implement find; possibly do n-str-n in header so we can backtrack?
 
 
 Setup

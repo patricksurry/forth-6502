@@ -6,18 +6,9 @@
     .feature c_comments
     .feature underline_in_numbers
 
-__VERSION__ = 1
+__FORTH_VERSION__ = 1
 
     .include "word16.asm"
-    .zeropage
-
-FLG:    .res 1
-IDX:    .res 1
-ERR:    .res 1
-LEN:    .res 1
-TMP:    .res 1
-
-strbuf: .res 32
 
     .macro GETC
     .local wait
@@ -59,6 +50,8 @@ _NEXT:
         ; we need to jump to the address stored at the address stored in AW
         CPYIWW AW, BW       ; now BW has the interpreter address
         JMP (BW)            ; run the word's interpreter code
+
+.include "string.asm"
 
     .data
 
@@ -120,6 +113,7 @@ link .set link + 1
         .byte .strlen(name)
     .endif
         .byte name
+;TODO could store strlen at end as well for backtracking?
 ; main entrypoint for word pointing at codeword
     .ifnblank label
 .ident (label):
@@ -172,7 +166,7 @@ vptr:
 ; ---------------------------------------------------------------------
 ; core constants
 
-        DEFCONST "VERSION",,,   __VERSION__ ; current version of this forth
+        DEFCONST "VERSION",,,   __FORTH_VERSION__ ; current version of this forth
         ; DEFCONST "R0", R0, 0, 0		    ; The address of the top of the return stack.
         DEFCONST "DOCOL", "_DOCOL",, DOCOL   ; Pointer to DOCOL.
         DEFCONST "F_IMMED", "_F_IMMED",, F_IMMED		; Flag values
@@ -182,15 +176,19 @@ vptr:
 ; ---------------------------------------------------------------------
 ; core variables
 
-        DEFVAR "STATE"          ; executing = 0 or compiling != 0
-        DEFVAR "LATEST"         ;TODO latest word in the dictionary
-        DEFVAR "HERE"           ;TODO next free byte of memory
-        DEFVAR "BASE",,, 10     ; radix for printing and reading numbers
+    .import __MAIN_LAST__
+
+        DEFVAR "STATE"                          ; immediate = 0 / compile != 0
+        DEFVAR "LATEST", , , LASTWORD_header    ; head of our linked word list
+        DEFVAR "HERE", , , __MAIN_LAST__ + 1    ; next free byte of memory
+        DEFVAR "BASE", , , 10   ; radix for printing and reading numbers
 
 ; ---------------------------------------------------------------------
 ; native word definitions
 
     .ifdef TESTS
+    .include "unittest.asm"
+
         DEFCODE "_RTS"
         ; used by testword sequence as a subroutine
         rts
@@ -269,12 +267,14 @@ vptr:
 
         ; ?DUP :: x -- 0 | x x
         DEFCODE "?DUP", "QDUP"
+    .proc _qdup
         CMPIWC SP, 0
-        bne qdup_done   ; local labels don't work across macros containing labels
+        bne done
         GROW SP, 1
         DUPE SP, 1, 0
-qdup_done:
+done:
         NEXT
+    .endproc
 
         ; + :: x y -- x+y
         DEFCODE "+", "PLUS"
@@ -306,33 +306,88 @@ qdup_done:
         PUSHW SP, CW
         NEXT
 
+        ; 1+ :: num -- num
+        DEFCODE "1+", "INC1"
+        POPW SP, AW
+        INCW AW
+        PUSHW SP, AW
+        NEXT
+
+        ; 2+ :: num -- num
+        DEFCODE "2+", "INC2"
+        POPW SP, AW
+        ADDWCW AW, 2, AW
+        PUSHW SP, AW
+        NEXT
 
 ;TODO stack words
 ; SP@ - return SP
 ; S0 return SP-2 (next free location)
 
+        ; LIT :: -- x
         ; push the next word as a constant and skip it
         DEFCODE "LIT"
         PUSHIW SP, PC   ; copy literal to stack
         INCPC           ; and skip it
         NEXT
 
+; ---------------------------------------------------------------------
+; Memory
+
+        ; STORE :: x adr --
+        ; store x @ adr
+        DEFCODE "!", "STORE"
+        POPW SP, AW
+        POPW SP, BW
+        CPYWIW BW, AW
+        NEXT
+
+        ; FETCH :: adr -- x
+        DEFCODE "@", "FETCH"
+        POPW SP, AW
+        CPYIWW AW, BW
+        PUSHW SP, BW
+        NEXT
+
+        ; ADDSTORE :: x adr --
+        ; (adr) += x
+        DEFCODE "+!", "ADDSTORE"
+        POPW SP, AW
+        POPW SP, BW
+        ADDIWWIW AW, BW, AW
+        NEXT
+
+        ; SUBSTORE :: x adr --
+        ; (adr) -= x
+        DEFCODE "-!", "SUBSTORE"
+        POPW SP, AW
+        POPW SP, BW
+        SUBIWWIW AW, BW, AW
+        NEXT
+
+;TODO STOREBYTE, FETCHBYTE, CCOPY, CMOVE
+
+; ---------------------------------------------------------------------
+; I/O
+        ; KEY :: -- c
         DEFCODE "KEY"
         GETC
         sta TMP
         PUSHB SP, TMP
         NEXT
 
+        ; EMIT :: c --
         DEFCODE "EMIT"
         POPB SP, TMP
         lda TMP
         PUTC
         NEXT
 
+        ; WORD :: -- sptr len
+        ; read a word from input
         DEFCODE "WORD"
-        ; -- adr len
     .proc _word
-        PUSHC SP, strbuf
+        PUSHC SP, STRBUF
         ldy #0
 skipspace:
         GETC
@@ -346,7 +401,7 @@ nocomment:
         cmp #$21    ; space + 1
         bmi skipspace
 store:
-        sta strbuf,y
+        sta STRBUF,y
         iny
         GETC
         cmp #$21
@@ -356,8 +411,9 @@ store:
         NEXT
     .endproc
 
+        ; NUMBER :: sptr len -- value err
         ; parse a number from a string
-        ; char* len -- value err  where err is # of unconverted chars
+        ; where err is 0 on success else # of unconverted chars
         DEFCODE "NUMBER"
         POPB SP, LEN
         POPW SP, AW     ; char*
@@ -366,240 +422,204 @@ store:
         PUSHB SP, ERR   ; number of unconverted chars (0 => success)
         NEXT
 
-; ---------------------------------------------------------------------
-; forth word definitions
+        ; FIND :: sptr len -- link | nul
+        DEFCODE "FIND"
+    .proc _find
+        POPB SP, LEN
+        POPW SP, AW
+        CPYWW LATEST_value, BW
+nextword:
+        CMPWC BW, 0
+        beq done
+        ldy #2
+        lda (BW),y
+        and #(F_HIDDEN | F_LENMASK)  ; get length, let hidden flag fail match
+        cmp LEN
+        bne nomatch
+        lda #3
+        ADDWAW BW,CW
+        ldy #0
+loop:
+        lda (CW),y
+        cmp (AW),y
+        bne nomatch
+        iny
+        cpy LEN
+        bne loop
+done:
+        PUSHW SP, BW
+        NEXT
+nomatch:
+        CPYWW BW,CW
+        CPYIWW CW,BW    ;TODO not safe to copy to self - macro should check/warn
+        jmp nextword
+    .endproc
 
+        ; >CFA :: link -- cptr
+        DEFCODE ">CFA", "TCFA"
+        POPW SP, AW
+        ldy #2
+        lda (AW),y
+        and #F_LENMASK
+        clc
+        adc #3
+        ADDWAW AW, AW
+        PUSHW SP, AW
+        NEXT
+
+        ; >DFA :: link -- dptr
+        DEFWORD ">DFA", "TDFA"
+        .word TCFA
+        .word INC2
+        .word EXIT
+
+        ; CREATE :: sptr len --
+        ; create the header for new word defintion, updates HERE, LATEST
+        DEFCODE "CREATE"
+    .proc _create
+        POPB SP, LEN
+        POPW SP, AW
+        ; write the link to point back to latest
+        CPYWW HERE_value, BW
+        CPYWIW LATEST_value, BW
+        ; and update latest to point here
+        CPYWW HERE_value, LATEST_value
+        ; write the length byte followed by the string
+        ldy #2
+        lda LEN
+        sta (BW),y
+        lda #3
+        ADDWAW BW,BW        ; here += 3
+        ldy LEN
+copy:
+        lda (AW),y
+        sta (BW),y
+        dey
+        bne copy
+        lda LEN
+        ADDWAW BW,BW        ; here += LEN
+        CPYWW BW,HERE_value
+        NEXT
+    .endproc
+
+        ; , :: ptr --
+        ; append a codeword to HERE, updates HERE
+        DEFCODE ",", "COMMA"
+        POPW SP, AW
+        CPYWW HERE_value, BW
+        CPYWIW AW, BW
+        ADDWCW HERE_value, 2, HERE_value
+        NEXT
+
+        ; [ :: --
+        ; set STATE = 0 (immediate mode)
+        DEFCODE "[", "LBRAC"
+        lda #0
+        sta STATE_value
+        NEXT
+
+        ; ] :: --
+        ; set STATE = 1 (compile mode)
+        DEFCODE "]", "RBRAC"
+        lda #1
+        sta STATE_value
+        NEXT
+
+        ; : :: --
+        ; start definition of anew word
+        DEFWORD ":", "COLON"
+	    .word WORD		            ; Get the name of the new word
+	    .word CREATE		        ; CREATE the dictionary entry / header
+	    .word LIT, DOCOL, COMMA     ; Append DOCOL  (the codeword).
+	    .word LATEST, FETCH, HIDDEN ; Hide the word (toggle)
+	    .word RBRAC		            ; Set compile mode.
+	    .word EXIT
+
+        ; ; :: --
+        ; end current definition
+	    DEFWORD ";", "SEMICOLON", F_IMMED
+        .word LIT, EXIT, COMMA	    ; Append EXIT
+        .word LATEST, FETCH, HIDDEN ; Unhide the word
+        .word LBRAC		            ; Go back to IMMEDIATE mode.
+        .word EXIT		            ; Return from the function.
+
+        ; IMMEDIATE :: --
+        ; toggle F_IMMED on latest word
+        DEFCODE "IMMEDIATE", , F_IMMED
+        ldy #2
+        CPYWW LATEST_value, AW
+        lda (AW),y
+        eor #F_IMMED
+        sta (AW),y
+        NEXT
+
+        ; HIDDEN :: addr --
+        ; toggle F_HIDDEN on word at addr
+        DEFCODE "HIDDEN"
+        POPW SP, AW
+        ldy #2
+        lda (AW),y
+        eor #F_HIDDEN
+        sta (AW),y
+        NEXT
+
+        ; HIDE :: --
+        ; make next word hidden
+        DEFWORD "HIDE"
+        .word WORD
+        .word FIND
+        .word HIDDEN
+        .word EXIT
+
+        ; ' :: adr --
+        ; in compiled mode, append next word to stack and skip it
+        ;TODO identical to LIT ? in jonesforth it's just push v pushl
+        DEFCODE "'", "TICK"
+        PUSHIW SP, PC   ; copy next word to stack
+        INCPC           ; and skip it
+        NEXT
+
+        ; BRANCH :: --
+        ; increment PC by the word after BRANCH which should be even
+        ; BRANCH 2 is a no-op, BRANCH -2 is an infinite loop
+        DEFCODE "BRANCH"
+        ADDWIWW PC, PC, AW  ;TODO not safe to write direct back to PC
+        CPYWW AW, PC
+        NEXT
+
+        ; 0BRANCH :: flag --
+        ; branch by offset in next word if flag is 0, else continue
+        DEFCODE "0BRANCH", "_0BRANCH"
+        POPW SP, AW
+        CMPWC AW, 0
+        beq BRANCH+2     ; jump to unconditional branch above
+        INCPC
+        NEXT
+
+; ---------------------------------------------------------------------
+; a few exploratory forth words for testing
+
+        ; DOUBLE :: x -- 2*x
         DEFWORD "DOUBLE"
         .word DUP
         .word PLUS
         .word EXIT
 
+        ; QUADRUPLE :: x -- 2*2*x
         DEFWORD "QUADRUPLE"
         .word DOUBLE
         .word DOUBLE
         .word EXIT
 
-; ---------------------------------------------------------------------
-; helpers
+        ; FIB :: n -- fn
+        DEFWORD "FIB"
+; : FIB 0 1 ROT 1 BEGIN 2DUP > WHILE 1+ 2SWAP DUP ROT + 2SWAP REPEAT 2DROP NIP ;
+; : FIB 0 1 ROT 0 ?DO OVER + SWAP LOOP DROP ;
+        .word EXIT
 
-hashxrl3:
-        ; compute a simple hash of up to 256 bytes
-        ; set AW H/L to start address, Y as number of bytes; on return A contains hash
-        ; hash is calculated by setting A = 0 and reducing A = (A ^ x) <o 3
-        ; for each byte x in the reversed range, starting from the last byte
-        ; where ^ means "exclusive or" and <o 3 means "circular rotate 3 bits left"
-
-        ; python version, strhash('banana') => 51 == 0x33
-        ;
-        ; def rol(x):   # a circulate rotate not through carry
-        ;     x <<= 1
-        ;     return (x & 0xff) | (x >> 8)
-        ;
-        ; def hash(xs):
-        ;     h = 0
-        ;     for x in xs:
-        ;         h = rol(rol(rol(h ^ x)))
-        ;     return h
-        ;
-        ; def strhash(s):
-        ;     return hash(map(ord, reversed(s)))
-
-        lda #0
-@loop:
-        dey
-        bpl @chr    ; while y >= 0
-        rts
-@chr:
-        eor (AW),y  ; xor acc with next char
-        ; rotate acc left 3 bits (despite 6502's usual roll-thru-carry semantics)
-        ; the letters a-h show the current MSB -> LSB bits in the acc, followed by the carry flag
-                    ; abcd efgh  ?   (carry is initially unknown)
-        asl         ; bcde fgh0  a   (the MSB 'a' -> carry)
-        adc #$80    ; Bcde fgha  b   (adc trick puts 'a' -> LSB and b -> carry; leaves MSB as "not b")
-        rol         ; cdef ghab  B   (rol cycles in 'b' and drops the unneeded B -> carry)
-        asl         ; defg hab0  c   (discard B and gets c -> carry)
-        adc #0      ; defg habc  0   (another adc to set the LSB, and always leave 0 -> carry)
-        ; (note for rotl4 we could instad repeat the adc #$80 / rol trick)
-        bcc @loop   ; unconditional since final carry is always 0
-
-upcase_mask = %1101_1111    ; clears l/c bit
-
-    .data
-
-radixlist:
-        ; lookup tables for radix prefixes
-        ; coincidentally(!?) if we look at the five lowest bits
-        ; the radix character's leading 1-bit corresponds to the base
-        ; B = 00010 => 2, [F = 000110 => 3], O = 01111 => 4, X = 11000 => 5
-        .byte "BFOX"     ; binary / 'forth' / octal / hex
-radixmax:
-        .byte 2, 4, 8, 16
-digitlist:
-        .byte "0123456789ABCDEF"
-
-    .code
-
-fmtint:
-    .proc _fmtint
-        ; fmtint :: AW, BW, A=radix => string *BW, LEN ## Y, AW
-        sta TMP
-        SETWA CW        ; radix
-        ldy #0
-        sty IDX
-        bit AW+1
-        bpl nosign
-        lda #'-'        ; negative?
-        sta (BW),y
-        inc IDX
-        NEGWW AW,AW
-nosign:
-        ldx #4
-        lda TMP
-findpfx:
-        dex
-        bmi calclen
-        cmp radixmax,x
-        bne findpfx
-        ; with known radix r, display 0r prefix
-        ldy IDX
-        lda #'0'
-        sta (BW),y
-        iny
-        lda radixlist,x
-        ora #($ff ^ upcase_mask) ; use lower case 0x, 0b, 0o etc
-        sta (BW),y
-        iny
-        sty IDX
-calclen:
-        SUBWWW AW,CW,DW
-        bit DW+1
-        bmi setlen      ; num < radix^k ?
-        inc IDX
-        lda TMP
-        MULWAW CW,CW    ; CW := CW * radix
-        jmp calclen
-setlen:
-        lda IDX
-        sta LEN
-        inc LEN
-        lda TMP
-        SETWA DW        ; radix
-next:
-        DIVWWWW AW,DW, CW,EW    ; AW/DW => quo=CW, rem=EW
-        ldx EW
-        lda digitlist,x
-        ldy IDX
-        sta (BW),y
-        CMPWC CW, 0
-        beq done
-        CPYWW CW, AW
-        dec IDX
-        bpl next
-done:   rts
-    .endproc
-
-parseint:
-    .proc _parseint
-        ; parseint :: AX, LEN => BX, ERR ## X, Y; FLG, IDX, TMP
-        ; parse a number from a string with length N < 256
-        ;
-        ;   123, -123, 0b0101010, -0o754, 0xbead
-        ;
-        ; specifically we look for these two patterns
-        ;
-        ;   [-][1-9][0-9]+
-        ;   [-]0[bBoOxX][0-9a-fA-F]+
-        ;
-        ; AW points to string
-        ; LEN contains length
-        ; on return ERR=0 indicates success, with parsed value in BW
-        ; on failure ERR != 0 as # unconverted chars (-1 if fail by exhausting string)
-        SETWC BW, 0     ; initialize result
-        ldy #0          ; character index
-        cpy LEN
-        beq invalid
-        sty FLG         ; sign=0
-        sty ERR         ; err=0
-        lda BASE_value  ; forth variable value
-        sta TMP         ; default radix
-        lda (AW),y
-        cmp #'-'
-        bne nosign
-        iny
-        cpy LEN
-        beq invalid
-        sty FLG         ; sign=1
-        lda (AW),y
-nosign:
-        cmp #'0'        ; leading 0?
-        bne digits
-        iny             ; look for radix
-        cpy LEN
-        beq invalid
-        lda (AW),y
-        and #upcase_mask
-        ldx #4
-radixloop:
-        dex
-        bmi invalid
-        cmp radixlist,x
-        bne radixloop
-        lda radixmax,x
-        sta TMP     ; radix
-        iny         ; grab initial digit
-        cpy LEN
-        beq invalid
-        lda (AW),y
-        jmp digits
-invalid:
-        ; return # of unprocessed chars
-        ; failed on the y-th char, so N-Y unprocessed
-        ; if Y == N (string exhausted) return -1
-        cpy LEN
-        bne notlast
-        iny
-notlast:
-        sty TMP
-        lda LEN
-        sec
-        sbc TMP
-        sta ERR
-        rts
-digits:
-        ; check digit is valid 0 <= d < radix
-        sec
-        sbc #'0'
-        bmi invalid
-        cmp #10             ; 0-9 ?
-        bmi checkmax
-        and #upcase_mask    ; clear lower case flag
-        cmp #('A' - '0')    ; between 9 and A?
-        bmi invalid
-        sbc #('A' - '0' - 10)   ; 'A' => 'A' - '0' - ('A' - '0' - 10) => 10
-checkmax:
-        cmp TMP
-        bpl invalid
-        ; result := result * radix + digit
-        sty IDX
-        pha
-        lda TMP     ; radix
-        MULWAW BW,BW
-        pla
-        ADDWAW BW,BW
-        ldy IDX
-        ; next digit
-        iny
-        cpy LEN
-        beq done
-        lda (AW),y
-        jmp digits
-done:
-        lda FLG
-        beq positive
-        NEGWW BW, BW        ; negate value
-positive:
-        rts
-    .endproc
+        ; this is the head of our linked list of words
+        DEFWORD "LASTWORD"
+        .word EXIT
 
 ; ---------------------------------------------------------------------
 ; unit tests
@@ -620,94 +640,32 @@ test_wordlist:
         .word 0
         .word _RTS
 
-banana:
-        .byte "banana"
-strint1:
-        .byte 4, "1234"
-strint2:
-        .byte 4, "-456"
-strint3:
-        .byte 10, "0b00101010"
-strint4:
-        .byte 6, "-0o754"
-strint5:
-        .byte 6, "0xbead"
-
 test_forth:
-
-        lda #<banana
-        sta AW
-        lda #>banana
-        sta AW+1
-        ldy #$6
-        jsr hashxrl3
-        EXPECTAC $33, "hashxrl3"
-
-        SETWC AW, 1234
-        SETWC BW, strbuf
-        lda #10
-        jsr fmtint
-        EXPECTSTR BW, "1234", "fmtint"
-
-        SETWC AW, -1234
-        lda #$10
-        jsr fmtint
-        EXPECTSTR BW, "-0x4D2", "fmtint_x"
-
-        SETWC AW, 1234
-        lda #2
-        jsr fmtint
-        EXPECTSTR BW, "0b10011010010", "fmtint_b"
-
-        lda strint1
-        sta LEN
-        SETWC AW, strint1+1
-        jsr parseint
-        EXPECTWC BW, 1234, "parseint1"
-
-        lda strint2
-        sta LEN
-        SETWC AW, strint2+1
-        jsr parseint
-        EXPECTWC BW, -456, "parseint2"
-
-        lda strint3
-        sta LEN
-        SETWC AW, strint3+1
-        jsr parseint
-        EXPECTWC BW, 42, "parseint3"
-
-        lda strint4
-        sta LEN
-        SETWC AW, strint4+1
-        jsr parseint
-        EXPECTWC BW, -492, "parseint4"
-
-        lda strint5
-        sta LEN
-        SETWC AW, strint5+1
-        jsr parseint
-        EXPECTWC BW, 48813, "parseint5"
-
         SETWC SP, $400
 
         SETWC test_wordlist, NUMBER
-
         PUSHC SP, strint5+1
         PUSHB SP, strint5
         jsr test_word
         POPW SP, BW
         POPW SP, AW
-        EXPECTWC AW, 48813, "ok_NUMBER_val"
-        EXPECTWC BW, 0, "ok_NUMBER_err"
+        EXPECTWC AW, 48813, "NUMBER ok val"
+        EXPECTWC BW, 0, "NUMBER ok flg"
 
         PUSHC SP, banana
         PUSHC SP, 6
         jsr test_word
         POPW SP, BW
         POPW SP, AW
-        EXPECTWC AW, 0, "bad_NUMBER_val"
-        EXPECTWC BW, 6, "bad_NUMBER_err"
+        EXPECTWC AW, 0, "NUMBER bad val"
+        EXPECTWC BW, 6, "NUMBER bad flg"
+
+        SETWC test_wordlist, FIND
+        PUSHC SP, NROT_header+3
+        PUSHB SP, NROT_header+2
+        jsr test_word
+        POPW SP, AW
+        EXPECTWC AW, NROT_header, "FIND -ROT"
 
 .endif
 
