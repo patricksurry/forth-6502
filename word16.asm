@@ -39,7 +39,7 @@ EW:     .res 2
 
 _TW:    .res 2   ; internal registers used by macros
 _F:     .res 1
-    .align 2
+        .res 1
 
 ; ---------------------------------------------------------------------
 ; set SET
@@ -106,6 +106,16 @@ _F:     .res 1
     .macro _CPYWW source, target, source_mode, target_mode
         ; copy a .word from one address to another with given modes
         ; mode 0=abs/1=ind
+
+    unsafe .set 0
+    .if .xmatch(source, target)
+        .if source_mode = target_mode
+            .error .sprintf ("CPY[I]W[I]W %s %s: self copy is a no-op", .string(source), .string(target))
+        .elseif target_mode = 0
+            ; unsafe to copy (AW) => AW
+            unsafe .set 1
+        .endif
+    .endif
     .if source_mode | target_mode
         ldy #0
     .endif
@@ -117,7 +127,11 @@ _F:     .res 1
     .if target_mode
         sta (target),y
     .else
-        sta target
+        .if unsafe
+            pha
+        .else
+            sta target
+        .endif
     .endif
     .if source_mode | target_mode
         iny
@@ -131,6 +145,10 @@ _F:     .res 1
         sta (target),y
     .else
         sta target+1
+    .endif
+    .if unsafe
+        pla
+        sta target
     .endif
     .endmac
 
@@ -274,6 +292,12 @@ done:
     .macro _PMWCW op, source, value, target, source_mode, target_mode
         ; op 0=adc/1=sbc, mode 0=abs/1=ind
     .local done
+    unsafe .set 0
+    .if .xmatch(source, target) && source_mode = 1 && target_mode = 0
+        ; unsafe to read from (AW) while writing to AW
+        unsafe .set 1
+    .endif
+
     .if source_mode | target_mode
         ldy #0
     .endif
@@ -295,10 +319,14 @@ done:
     .if target_mode
         sta (target),y
     .else
-        sta target
+        .if unsafe
+            pha
+        .else
+            sta target
+        .endif
     .endif
-    .if .const(value) && >(value) = 0 && .xmatch(source, target)
-        ; adding single byte constant to self
+    .if .const(value) && >(value) = 0 && .xmatch(source, target) && (!source_mode) && (!target_mode)
+        ; adding single byte constant to self in immediate mode
         .if op
         bcs done
         dec source+1
@@ -309,22 +337,26 @@ done:
 done:
     .else
         .if source_mode | target_mode
-        iny
+            iny
         .endif
         .if source_mode
-        lda (source),y
+            lda (source),y
         .else
-        lda source+1
+            lda source+1
         .endif
         .if op
-        sbc #>(value)
+            sbc #>(value)
         .else
-        adc #>(value)
+            adc #>(value)
         .endif
         .if target_mode
-        sta (target)),y
+            sta (target)),y
         .else
-        sta target+1
+            sta target+1
+            .if unsafe
+                pla
+                sta target
+            .endif
         .endif
     .endif
     .endmac
@@ -366,6 +398,9 @@ done:
     .macro _PMWWW op, left, right, target, left_mode, right_mode, target_mode
         ; op 0=adc/1=sbc, mode 0=abs/1=ind
         ; stomps y; C=16bit carry
+
+    ;TODO check for unsafe write to AW while reading (AW) in left and/or right
+    ;TODO error if left == right should do ASL instead
     .if left_mode | right_mode | target_mode
         ldy #0
     .endif
@@ -612,20 +647,28 @@ skip:
 
     .macro GROW stack, count
         ; GROW SP, {2} :: SP - 2*{2} => SP ## A
-        lda #256-count*2
         dec stack+1         ; subtract 256 then add acc as unsigned
+        .ifnblank count
+            lda #(256-count*2)
+        .else
+            lda #254
+        .endif
         ADDWAW stack, stack
     .endmac
 
     .macro SHRINK stack, count
-        ; SHRINK SP, 1
-        lda #count*2
+        ; SHRINK SP[, 1]
+        .ifnblank count
+            lda #(count*2)
+        .else
+            lda #2
+        .endif
         ADDWAW stack, stack
     .endmac
 
     .macro _PUSHW stack, source, mode
         ; mode 0=abs/1=ind/-1=imm
-        GROW stack, 1
+        GROW stack
     .if mode = -1
         _SETWC stack, source, 1
     .else
@@ -647,7 +690,7 @@ skip:
 
 
     .macro PUSHB stack, source
-        GROW stack, 1
+        GROW stack
         lda source
         SETIWA stack
     .endmac
@@ -730,6 +773,11 @@ test_word16:
         EXPECTWC SP, $401, "INCW"
         DECW SP
 
+        SETWC $200, $123
+        SETWC AW, $200
+        CPYIWW AW, AW
+        EXPECTWC AW, $123, "CPYIWW"
+
         SETWC AW, $1ff
         SETWC BW, $102
         ADDWWW AW, BW, CW
@@ -742,9 +790,9 @@ test_word16:
         ADDWWW AW, BW, CW
         EXPECTWC CW, 0, "NEGWW"
 
-        GROW SP, 1
+        GROW SP
         EXPECTWC SP, ($400-2), "ADDWCW"
-        SHRINK SP, 1
+        SHRINK SP
 
         SETWC AW, 234
         ASLW AW

@@ -8,6 +8,12 @@
 
 __FORTH_VERSION__ = 1
 
+    .import __MAIN_LAST__
+    .import __STACK_START__
+    .import __STACK_SIZE__
+
+__RETSTACK_START__ = __STACK_START__ - __STACK_SIZE__
+
     .include "word16.asm"
 
     .macro GETC
@@ -51,34 +57,18 @@ _NEXT:
         CPYIWW AW, BW       ; now BW has the interpreter address
         JMP (BW)            ; run the word's interpreter code
 
+forth:
+        ; initial entry point
+        SETWC SP, __STACK_START__
+        SETWC PC, cold_start
+        NEXT
+
 .include "string.asm"
 
     .data
 
 cold_start:
-        ; .word KEY
-        ; .word EMIT
-        .word LIT
-        .word 7
-        .word LIT
-        .word 42
-        .word SWAP
-        .word DUP
-        .word WORD
-        .word NUMBER
-        .word DROP  ; drop the err count
-        .word PLUS
-        .word QUADRUPLE
-        .word QUIT
-
-    .code
-
-main:
-        ; initial entry point
-        SETWC SP, $400
-        SETWC RP, $600
-        SETWC PC, cold_start
-        NEXT
+        .word QUIT      ; start up interpreter
 
 ; ---------------------------------------------------------------------
 ; macros to define words with appropriate header
@@ -138,7 +128,7 @@ code:
     .endmac
 
     .macro DEFCONST name, label, flags, value
-        ; define a constant
+        ; define word that fetches constant to stack
         DEFCODE name, label, flags
         PUSHW SP, value
         NEXT
@@ -146,7 +136,7 @@ code:
 
     .macro DEFVAR name, label, flags, value
     .local vptr
-        ; define a variable
+        ; define word that returns value of a variable
         DEFCODE name, label, flags
         PUSHW SP, vptr
         NEXT
@@ -163,11 +153,13 @@ vptr:
     .endif
     .endmac
 
+    .code
+
 ; ---------------------------------------------------------------------
 ; core constants
 
-        DEFCONST "VERSION",,,   __FORTH_VERSION__ ; current version of this forth
-        ; DEFCONST "R0", R0, 0, 0		    ; The address of the top of the return stack.
+        DEFCONST "VERSION",,, __FORTH_VERSION__ ; current version of this forth
+        DEFCONST "R0",,, __RETSTACK_START__ ; top of return stack
         DEFCONST "DOCOL", "_DOCOL",, DOCOL   ; Pointer to DOCOL.
         DEFCONST "F_IMMED", "_F_IMMED",, F_IMMED		; Flag values
         DEFCONST "F_HIDDEN", "_F_HIDDEN",,  F_HIDDEN
@@ -175,8 +167,6 @@ vptr:
 
 ; ---------------------------------------------------------------------
 ; core variables
-
-    .import __MAIN_LAST__
 
         DEFVAR "STATE"                          ; immediate = 0 / compile != 0
         DEFVAR "LATEST", , , LASTWORD_header    ; head of our linked word list
@@ -189,14 +179,15 @@ vptr:
     .ifdef TESTS
     .include "unittest.asm"
 
+        ; use as last word in a DEFWORD phrase to make a testable subroutine
         DEFCODE "_RTS"
-        ; used by testword sequence as a subroutine
         rts
-    .endif
 
-        DEFCODE "QUIT"
-        ; TODO fix me
+        ; use as last word in a DEFWORD phrase to terminate, e.g. in cold_start test
+        DEFCODE "_BRK"
         brk
+
+    .endif
 
         ; when we've finished a Forth word, we just recover the old PC and proceed
         DEFCODE "EXIT"
@@ -205,7 +196,7 @@ vptr:
 
         ; DROP :: x --
         DEFCODE "DROP"
-        SHRINK SP, 1
+        SHRINK SP
         NEXT
 
         ; SWAP :: x y -- y x
@@ -217,13 +208,13 @@ vptr:
 
         ; DUP :: x -- x x
         DEFCODE "DUP"
-        GROW SP, 1
+        GROW SP
         DUPE SP, 1, 0
         NEXT
 
         ; OVER :: x y -- x y x
         DEFCODE "OVER"
-        GROW SP, 1
+        GROW SP
         DUPE SP, 2, 0
         NEXT
 
@@ -270,7 +261,7 @@ vptr:
     .proc _qdup
         CMPIWC SP, 0
         bne done
-        GROW SP, 1
+        GROW SP
         DUPE SP, 1, 0
 done:
         NEXT
@@ -320,15 +311,58 @@ done:
         PUSHW SP, AW
         NEXT
 
-;TODO stack words
-; SP@ - return SP
-; S0 return SP-2 (next free location)
-
         ; LIT :: -- x
         ; push the next word as a constant and skip it
         DEFCODE "LIT"
         PUSHIW SP, PC   ; copy literal to stack
         INCPC           ; and skip it
+        NEXT
+
+; ---------------------------------------------------------------------
+; STACK
+
+        ; DSP@ :: -- sp
+        ; push the current stack pointer on the stack
+        DEFCODE "DSP@", "DSPFETCH"
+        PUSHW SP, SP
+        NEXT
+
+        ; DSP! :: sp --
+        ; set the stack pointer from the top of the stack
+        DEFCODE "DSP!", "DSPSTORE"
+        POPW SP, SP
+        NEXT
+
+        ; RSP@ ::  -R- sp
+        ; push the current return stack pointer on the stack
+        DEFCODE "RSP@", "RSPFETCH"
+        PUSHW RP, RP
+        NEXT
+
+        ; RSP! :: sp -R-
+        ; set the return stack pointer from the top of the return stack
+        DEFCODE "RSP!", "RSPSTORE"
+        POPW RP, RP
+        NEXT
+
+        ; RDROP :: x -R-
+        ; drop top of return stack
+        DEFCODE "RDROP"
+        SHRINK RP
+        NEXT
+
+        ; >R :: x --  ;  -R- x
+        ; move top stack elt to return stack
+        DEFCODE ">R", "TORS"
+        POPW SP, AW
+        PUSHW RP, AW
+        NEXT
+
+        ; R> :: -- x  ;  x -R-
+        ; move top of return stack to stack
+        DEFCODE "R>", "FROMRS"
+        POPW RP, AW
+        PUSHW SP, AW
         NEXT
 
 ; ---------------------------------------------------------------------
@@ -429,7 +463,7 @@ store:
         POPW SP, AW
         CPYWW LATEST_value, BW
 nextword:
-        CMPWC BW, 0
+        CMPWC BW, 0         ; BW is curr ptr in linked lst
         beq done
         ldy #2
         lda (BW),y
@@ -437,9 +471,9 @@ nextword:
         cmp LEN
         bne nomatch
         lda #3
-        ADDWAW BW,CW
+        ADDWAW BW, CW       ; CW is start of name
         ldy #0
-loop:
+loop:                       ; compare name
         lda (CW),y
         cmp (AW),y
         bne nomatch
@@ -447,11 +481,10 @@ loop:
         cpy LEN
         bne loop
 done:
-        PUSHW SP, BW
+        PUSHW SP, BW        ; found match
         NEXT
 nomatch:
-        CPYWW BW,CW
-        CPYIWW CW,BW    ;TODO not safe to copy to self - macro should check/warn
+        CPYIWW BW, BW       ; check prev word
         jmp nextword
     .endproc
 
@@ -581,9 +614,10 @@ copy:
 
         ; BRANCH :: --
         ; increment PC by the word after BRANCH which should be even
-        ; BRANCH 2 is a no-op, BRANCH -2 is an infinite loop
+        ; BRANCH 2 is a no-op (just skipping the literal)
+        ; BRANCH -2 is an infinite loop to self
         DEFCODE "BRANCH"
-        ADDWIWW PC, PC, AW  ;TODO not safe to write direct back to PC
+        ADDWIWW PC, PC, AW  ;TODO unsafe to write direct back to PC
         CPYWW AW, PC
         NEXT
 
@@ -595,6 +629,15 @@ copy:
         beq BRANCH+2     ; jump to unconditional branch above
         INCPC
         NEXT
+
+        DEFWORD "QUIT"
+        .word R0, RSPSTORE  ; set up return stack
+        .word INTERPRET
+        .word BRANCH, $10000 - 2*2  ; repeat INTERPRET forever
+
+        DEFWORD "INTERPRET"
+        ;TODO
+        .word EXIT
 
 ; ---------------------------------------------------------------------
 ; a few exploratory forth words for testing
@@ -632,16 +675,16 @@ copy:
 test_word:
         ; set test_word.d to word under test,
         ; set up stack appropriately, jsr here
-        SETWC RP, $600
-        SETWC PC, ::test_wordlist
+        SETWC RP, __RETSTACK_START__
+        SETWC PC, test_wordlist
         NEXT
 
 test_wordlist:
-        .word 0
+        .word 0     ; we'll write out test word here
         .word _RTS
 
 test_forth:
-        SETWC SP, $400
+        SETWC SP, __STACK_START__
 
         SETWC test_wordlist, NUMBER
         PUSHC SP, strint5+1

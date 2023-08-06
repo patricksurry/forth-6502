@@ -9,7 +9,7 @@ tests: forth sym2py65.py
 	echo "goto test_main" >> forth.mon
 	echo "m test_report/300 ascii" >> forth.mon
 	echo "m test_report/1" >> forth.mon
-	py65mon -l forth.bin -a 800 -b forth.mon
+	py65mon -l forth.bin -b forth.mon -a `grep __MAIN_START__ forth.sym | cut -d' '  -f2`
 
 clean:
 	rm -f *.bin *.lst *.map *.o *.mon
