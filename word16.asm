@@ -399,6 +399,24 @@ done:
         ; op 0=adc/1=sbc, mode 0=abs/1=ind
         ; stomps y; C=16bit carry
 
+    .if .xmatch(left, right) && left_mode == right_mode
+        .if op
+            .warning .sprintf ("SUB %s %s ... is redundant, use SETWC ..., 0 instead?", .string(left), .string(right))
+        .else
+            .warning .sprintf ("ADD %s %s ... is redundant, use ASL ... instead?", .string(left), .string(right))
+        .endif
+    .endif
+    unsafe .set 0
+    .if target_mode = 0
+        if .xmatch(left, target) && left_mode = 1
+            unsafe .set 1
+            .error .sprintf ("ADD/SUB: (%s) ... %s: unsafe indirect source with direct write", .string(left), .string(target)) )
+        .elseif .xmatch(right, target) && right_mode = 1
+            unsafe .set 2
+            .error .sprintf ("ADD/SUB: ... (%s) %s: unsafe indirect source with direct write", .string(right), .string(target)) )
+        .endif
+    .endif
+
     ;TODO check for unsafe write to AW while reading (AW) in left and/or right
     ;TODO error if left == right should do ASL instead
     .if left_mode | right_mode | target_mode
