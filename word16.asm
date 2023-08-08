@@ -7,10 +7,14 @@
 ;
 ;   SET[W|IW]C - set .word to 16-bit constant
 ;   CPY[W|IW][W|IW] - copy [indirect] .word to [indirect] .word
-;   CMP[W|IW][C|W|IW] - compare two .words
+;   EQU[W|IW][C|W|IW] - check equality for two .words (sets Z flag)
+;   SGN[w|IW] - sets Z, N, V flag
+;
 ;   [INC|DEC]W, DECW - increment or decrement a .word (no indirect form)
 ;   [ADD|SUB][W|IW][C|W|IW][W|IW] - add or subtract two .words to form a third
 ;   PUSH[C|W|IW], POP[W|IW] - push or pop from a stack
+;   PEEK, POKE - modify stack without changing pointer
+;   SHRINK, GROW - adjust stack pointer
 ;
 ; for standalone unit tests, assemble like
 ;
@@ -40,6 +44,15 @@ EW:     .res 2
 _TW:    .res 2   ; internal registers used by macros
 _F:     .res 1
         .res 1
+
+; status register flags
+SR_N = %10000000
+SR_V = %01000000
+SR_D = %00001000
+SR_I = %00000100
+SR_Z = %00000010
+SR_C = %00000001
+SR_ZVN = SR_Z | SR_V | SR_N
 
 ; ---------------------------------------------------------------------
 ; set SET
@@ -169,9 +182,9 @@ _F:     .res 1
     .endmac
 
 ; ---------------------------------------------------------------------
-; compare CMP
+; equality EQU
 
-    .macro _CMPWC target, value, mode
+    .macro _EQUWC target, value, mode, hi2f
         ; compare word to const; sets zero flag based on W == C
     .local done
     .if mode
@@ -179,6 +192,9 @@ _F:     .res 1
         lda (target),y
     .else
         lda target+1
+    .endif
+    .ifnblank hi2f
+        sta _F
     .endif
     .if >(value)
         cmp #>(value)
@@ -196,15 +212,15 @@ _F:     .res 1
 done:
     .endmac
 
-    .macro CMPWC source, value
-        _CMPWC source, value, 0
+    .macro EQUWC source, value
+        _EQUWC source, value, 0
     .endmac
 
-    .macro CMPIWC source, value
-        _CMPWC source, value, 1
+    .macro EQUIWC source, value
+        _EQUWC source, value, 1
     .endmac
 
-    .macro _CMPWW left, right, left_mode, right_mode
+    .macro _EQUWW left, right, left_mode, right_mode
         ; modes 0=abs/1=ind
     .local done
     .if left_mode | right_mode
@@ -237,20 +253,43 @@ done:
 done:
     .endmac
 
-    .macro CMPWW left, right
-        _CMPWW left, right, 0, 0
+    .macro EQUWW left, right
+        _EQUWW left, right, 0, 0
     .endmac
 
-    .macro CMPWIW left, right
-        _CMPWW left, right, 0, 1
+    .macro EQUWIW left, right
+        _EQUWW left, right, 0, 1
     .endmac
 
-    .macro CMPIWW left, right
-        _CMPWW left, right, 1, 0
+    .macro EQUIWW left, right
+        _EQUWW left, right, 1, 0
     .endmac
 
-    .macro CMPIWIW left, right
-        _CMPWW left, right, 1, 1
+    .macro EQUIWIW left, right
+        _EQUWW left, right, 1, 1
+    .endmac
+
+; ---------------------------------------------------------------------
+; SGN - set status bits for word, Z = zero?, V = bit 14, N = bit 15
+
+    .macro _SGNW target, mode
+    .local setflags
+        _EQUWC target, 0, mode, 1   ; hi2f stores hi byte in _F
+        beq setflags  ; Z=1 => _F = 0
+        lda _F
+        bne setflags
+        inc _F      ; make sure flag byte is non-zero
+setflags:
+        lda #$ff
+        bit _F      ; N = bit7, V = bit6, Z = ?0
+    .endmac
+
+    .macro SGNW target
+        _SGNW target, 0
+    .endmac
+
+    .macro SGNIW target
+        _SGNW target, 1
     .endmac
 
 ; ---------------------------------------------------------------------
@@ -399,7 +438,7 @@ done:
         ; op 0=adc/1=sbc, mode 0=abs/1=ind
         ; stomps y; C=16bit carry
 
-    .if .xmatch(left, right) && left_mode == right_mode
+    .if .xmatch(left, right) && left_mode = right_mode
         .if op
             .warning .sprintf ("SUB %s %s ... is redundant, use SETWC ..., 0 instead?", .string(left), .string(right))
         .else
@@ -408,17 +447,16 @@ done:
     .endif
     unsafe .set 0
     .if target_mode = 0
-        if .xmatch(left, target) && left_mode = 1
+        ;TODO could generate safe code instead of error
+        .if .xmatch(left, target) && left_mode = 1
             unsafe .set 1
-            .error .sprintf ("ADD/SUB: (%s) ... %s: unsafe indirect source with direct write", .string(left), .string(target)) )
+            .error .sprintf ("ADD/SUB: (%s) ... %s: unsafe indirect source with direct write", .string(left), .string(target))
         .elseif .xmatch(right, target) && right_mode = 1
             unsafe .set 2
-            .error .sprintf ("ADD/SUB: ... (%s) %s: unsafe indirect source with direct write", .string(right), .string(target)) )
+            .error .sprintf ("ADD/SUB: ... (%s) %s: unsafe indirect source with direct write", .string(right), .string(target))
         .endif
     .endif
 
-    ;TODO check for unsafe write to AW while reading (AW) in left and/or right
-    ;TODO error if left == right should do ASL instead
     .if left_mode | right_mode | target_mode
         ldy #0
     .endif
@@ -706,7 +744,6 @@ skip:
         _PUSHW stack, value, -1
     .endmac
 
-
     .macro PUSHB stack, source
         GROW stack
         lda source
@@ -716,7 +753,7 @@ skip:
     .macro _POPW stack, target, mode
         ; 0=abs/1=ind
         _CPYWW stack, target, 1, mode
-        SHRINK stack, 1
+        SHRINK stack
     .endmac
 
     .macro POPW stack, target
@@ -732,7 +769,7 @@ skip:
         ldy #0
         lda (stack),y
         sta target
-        SHRINK stack, 1
+        SHRINK stack
     .endmac
 
     .macro PEEK stack, index, target
@@ -746,7 +783,7 @@ skip:
     .endmac
 
     .macro POKE stack, index, source
-        ; POKEW SP, i, AW :: AW => (SP), i ## Y
+        ; POKE SP, i, AW :: AW => (SP), i ## Y
         ldy #index*2
         lda source
         sta (stack),y
@@ -795,6 +832,26 @@ test_word16:
         SETWC AW, $200
         CPYIWW AW, AW
         EXPECTWC AW, $123, "CPYIWW"
+
+        SETWC AW, $ffff
+        EQUWC AW, $ffff
+        php
+        pla
+        and #SR_Z
+        EXPECTAC SR_Z, "EQUWC"
+
+        SGNW AW
+        php
+        pla
+        and #SR_ZVN
+        EXPECTAC SR_V | SR_N, "SGNW -1"
+
+        INCW AW
+        SGNW AW
+        php
+        pla
+        and #SR_ZVN
+        EXPECTAC SR_Z, "SGNW 0"
 
         SETWC AW, $1ff
         SETWC BW, $102

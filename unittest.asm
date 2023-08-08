@@ -58,7 +58,7 @@ test_body:
         ; store test result
         CPYWW TST, test_report + test_index*16
 test_index .set test_index + 1
-        CMPWC TST, 0
+        EQUWC TST, 0
         beq ok
         ; test failed, increment overall count
         INCW test_report

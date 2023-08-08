@@ -36,6 +36,19 @@ wait:
         jmp _NEXT
     .endmac
 
+    .macro STRN s, pad
+        .byte .strlen(s)
+        .byte s
+    .ifnblank pad
+        .res (.strlen(s) + 1) .mod pad
+    .endif
+    .endmac
+
+    .macro LSTRN s
+        .word LITSTRING
+        STRN s, 2
+    .endmac
+
     .code
 
 DOCOL:
@@ -259,13 +272,180 @@ vptr:
         ; ?DUP :: x -- 0 | x x
         DEFCODE "?DUP", "QDUP"
     .proc _qdup
-        CMPIWC SP, 0
+        EQUIWC SP, 0
         bne done
         GROW SP
         DUPE SP, 1, 0
 done:
         NEXT
     .endproc
+
+; ---------------------------------------------------------------------
+; comparisons
+
+
+        ; = :: x y -- 0 | 1
+        DEFCODE "=", "EQU"
+    .proc _equ
+        POPW SP, AW
+        ldx #0
+        EQUIWW SP, AW
+        bne result
+        inx
+result: txa
+        SETIWA SP
+        NEXT
+    .endproc
+
+        ; <> :: x y -- 0 | 1
+        DEFCODE "<>", "NEQU"
+    .proc _nequ
+        POPW SP, AW
+        ldx #0
+        EQUIWW SP, AW
+        beq result
+        inx
+result: txa
+        SETIWA SP
+        NEXT
+    .endproc
+
+        ; < :: x y -- 0 | 1
+        DEFCODE "<", "LT"
+    .proc _lt
+        POPW SP, AW             ; y
+        SUBIWWW SP, AW, AW      ; x < y <=> x - y < 0
+        ldx #0
+        SGNW AW
+        bpl result
+        inx
+result: txa
+        SETIWA SP
+        NEXT
+    .endproc
+
+        ; > :: x y -- 0 | 1
+        DEFCODE ">", "GT"
+    .proc _gt
+        POPW SP, AW             ; y
+        SUBWIWW AW, SP, AW      ; x > y <=> y - x < 0
+        ldx #0
+        SGNW AW
+        bpl result
+        inx
+result: txa
+        SETIWA SP
+        NEXT
+    .endproc
+
+        ; <= :: x y -- 0 | 1
+        DEFCODE "<=", "LE"
+    .proc _le
+        POPW SP, AW             ; y
+        SUBWIWW AW, SP, AW      ; x <= y <=> y - x >= 0
+        ldx #0
+        SGNW AW
+        bmi result
+        inx
+result: txa
+        SETIWA SP
+        NEXT
+    .endproc
+
+        ; >= :: x y -- 0 | 1
+        DEFCODE ">=", "GE"
+    .proc _ge
+        POPW SP, AW             ; y
+        SUBIWWW SP, AW, AW      ; x >= y <=> x - y >= 0
+        ldx #0
+        SGNW AW
+        bmi result
+        inx
+result: txa
+        SETIWA SP
+        NEXT
+    .endproc
+
+        ; 0= :: x -- 0 | 1
+        DEFCODE "0=", "ZEQU"
+    .proc _zequ
+        ldx #0
+        EQUIWC SP, 0
+        bne result
+        inx
+result: txa
+        SETIWA SP
+        NEXT
+    .endproc
+
+        ; 0<> :: x -- 0 | 1
+        DEFCODE "0<>", "ZNEQU"
+    .proc _znequ
+        ldx #0
+        EQUIWC SP, 0
+        beq result
+        inx
+result: txa
+        SETIWA SP
+        NEXT
+    .endproc
+
+        ; 0< :: x -- 0 | 1
+        DEFCODE "0<", "ZLT"
+    .proc _zlt
+        ldx #0
+        SGNIW SP
+        bpl result
+        inx
+result: txa
+        SETIWA SP
+        NEXT
+    .endproc
+
+        ; 0> :: x -- 0 | 1
+        DEFCODE "0>", "ZGT"
+    .proc _zgt
+        ldx #0
+        SGNIW SP
+        bpl result
+        inx
+result: txa
+        SETIWA SP
+        NEXT
+    .endproc
+
+        ; 0<= :: x -- 0 | 1
+        DEFCODE "0<=", "ZLE"
+    .proc _zle
+        ldx #0
+        SGNIW SP
+        bmi result
+        inx
+result: txa
+        SETIWA SP
+        NEXT
+    .endproc
+
+        ; 0>= :: x -- 0 | 1
+        DEFCODE "0>=", "ZGE"
+    .proc _zge
+        ldx #0
+        SGNIW SP
+        bmi result
+        inx
+result: txa
+        SETIWA SP
+        NEXT
+    .endproc
+
+;TODO
+        ; AND
+        ; OR
+        ; XOR
+        ; INVERT (bitwise complement)
+
+; ---------------------------------------------------------------------
+; arithmetic
 
         ; + :: x y -- x+y
         DEFCODE "+", "PLUS"
@@ -316,6 +496,23 @@ done:
         DEFCODE "LIT"
         PUSHIW SP, PC   ; copy literal to stack
         INCPC           ; and skip it
+        NEXT
+
+        ; LIT :: -- sptr len
+        ; push the next word(s) as a length delim string the stack
+        DEFCODE "LITSTRING"
+        CPYWW PC, AW
+        INCW AW
+        PUSHW SP, AW
+        ldy #0
+        lda (PC),y
+        sta LEN
+        PUSHB SP, LEN
+        clc
+        lda LEN
+        adc #2      ; add two bytes (length byte + padding) and
+        and #$fe    ; ... clear last bit to get number of full words
+        ADDWAW PC, PC   ; bump PC to word boundary past string
         NEXT
 
 ; ---------------------------------------------------------------------
@@ -399,7 +596,27 @@ done:
         SUBIWWIW AW, BW, AW
         NEXT
 
-;TODO STOREBYTE, FETCHBYTE, CCOPY, CMOVE
+        ; C! :: x adr --
+        ; store x => adr
+        DEFCODE "C!", "STOREBYTE"
+        POPW SP, AW
+        POPB SP, TMP
+        ldy #0
+        lda TMP
+        sta (AW),y
+        NEXT
+
+        ; C@ :: adr -- x
+        ; fetch adr => x
+        DEFCODE "C@", "FETCHBYTE"
+        POPW SP, AW
+        ldy #0
+        lda (AW),y
+        sta TMP
+        PUSHB SP, TMP
+        NEXT
+
+;TODO  C@C! (CCOPY), CMOVE
 
 ; ---------------------------------------------------------------------
 ; I/O
@@ -416,6 +633,21 @@ done:
         lda TMP
         PUTC
         NEXT
+
+        ; TELL :: sptr len --
+        DEFCODE "TELL"
+    .proc _tell
+        POPB SP, LEN
+        POPW SP, AW
+        ldy #0
+        cpy LEN
+loop:   beq done
+        lda (AW),y
+        PUTC
+        iny
+        bne loop
+done:   NEXT
+    .endproc
 
         ; WORD :: -- sptr len
         ; read a word from input
@@ -463,7 +695,7 @@ store:
         POPW SP, AW
         CPYWW LATEST_value, BW
 nextword:
-        CMPWC BW, 0         ; BW is curr ptr in linked lst
+        EQUWC BW, 0         ; BW is curr ptr in linked lst
         beq done
         ldy #2
         lda (BW),y
@@ -623,9 +855,9 @@ copy:
 
         ; 0BRANCH :: flag --
         ; branch by offset in next word if flag is 0, else continue
-        DEFCODE "0BRANCH", "_0BRANCH"
+        DEFCODE "0BRANCH", "ZBRANCH"
         POPW SP, AW
-        CMPWC AW, 0
+        EQUWC AW, 0
         beq BRANCH+2     ; jump to unconditional branch above
         INCPC
         NEXT
@@ -636,8 +868,36 @@ copy:
         .word BRANCH, $10000 - 2*2  ; repeat INTERPRET forever
 
         DEFWORD "INTERPRET"
-        ;TODO
+        .word WORD      ; -- sptr len
+        .word _2DUP
+        .word FIND      ; sptr len -- link | nul
+        .word DUP       ; sptr len link link
+check_found:
+        .word ZBRANCH, not_found - check_found - 2
+        .word NROT, _2DROP ; drop copy of word keeping link
+        .word STATE
+check_mode:
+        .word ZBRANCH, execute - check_mode - 2
+        .word COMMA, EXIT ; compiled
+execute:
+        ; jmp to it like next but without affecting PC
+        ; so NEXT eventually carries on with BRANCH in QUIT
+;TODO        .word JUMP
+
+not_found:
+        .word NUMBER    ; sptr len -- value err
+        .word ZEQU
+        .word ZBRANCH, error - not_found - 2
+
+        .word STATE
+lit_mode:
+        .word ZBRANCH, pushlit - lit_mode - 2
+        .word LIT, COMMA, COMMA
+pushlit:
         .word EXIT
+error:
+        LSTRN "? parse error"
+        .word TELL, EXIT
 
 ; ---------------------------------------------------------------------
 ; a few exploratory forth words for testing
@@ -669,46 +929,61 @@ copy:
 
 .ifdef TESTS
 
+    .macro EXPECTPOP expected, label
+        POPW SP, AW
+        EXPECTWC AW, expected, label
+    .endmac
+
+    .macro TESTPHRASE phrase
+        SETWC PC, phrase
+        jsr _NEXT
+    .endmac
+
     .segment "TEST"
         jmp test_forth
 
-test_word:
-        ; set test_word.d to word under test,
-        ; set up stack appropriately, jsr here
-        SETWC RP, __RETSTACK_START__
-        SETWC PC, test_wordlist
-        NEXT
+test_numberok:
+        LSTRN "48813"  ; adds LITSTRING, leading length and pad to stack word width
+        .word NUMBER, _RTS
 
-test_wordlist:
-        .word 0     ; we'll write out test word here
-        .word _RTS
+test_numberbad:
+        LSTRN "banana"
+        .word NUMBER, _RTS
+
+test_find:
+        LSTRN "-ROT"
+        .word FIND, _RTS
+
+test_ge:    .word LIT, 3, LIT, 2, GE, _RTS
+test_zge0:  .word LIT, 0, ZGE, _RTS
+test_zge1:  .word LIT, 1, ZGE, _RTS
+test_zge_1: .word LIT, $10000 - 1, ZGE, _RTS
 
 test_forth:
         SETWC SP, __STACK_START__
+        SETWC RP, __RETSTACK_START__
 
-        SETWC test_wordlist, NUMBER
-        PUSHC SP, strint5+1
-        PUSHB SP, strint5
-        jsr test_word
-        POPW SP, BW
-        POPW SP, AW
-        EXPECTWC AW, 48813, "NUMBER ok val"
-        EXPECTWC BW, 0, "NUMBER ok flg"
+        TESTPHRASE test_numberok
+        EXPECTPOP 0, "NUMBER ok flg"
+        EXPECTPOP 48813, "NUMBER ok val"
 
-        PUSHC SP, banana
-        PUSHC SP, 6
-        jsr test_word
-        POPW SP, BW
-        POPW SP, AW
-        EXPECTWC AW, 0, "NUMBER bad val"
-        EXPECTWC BW, 6, "NUMBER bad flg"
+        TESTPHRASE test_numberbad
+        EXPECTPOP 6, "NUMBER bad flg"
+        EXPECTPOP 0, "NUMBER bad val"
 
-        SETWC test_wordlist, FIND
-        PUSHC SP, NROT_header+3
-        PUSHB SP, NROT_header+2
-        jsr test_word
-        POPW SP, AW
-        EXPECTWC AW, NROT_header, "FIND -ROT"
+        TESTPHRASE test_find
+        EXPECTPOP NROT_header, "FIND -ROT"
 
+        TESTPHRASE test_ge
+        EXPECTPOP 1, "3 >= 2"
+
+        TESTPHRASE test_zge0
+        EXPECTPOP 1, "0 0>="
+
+        TESTPHRASE test_zge1
+        EXPECTPOP 1, "1 0>="
+
+        TESTPHRASE test_zge_1
+        EXPECTPOP 0, "-1 0>="
 .endif
 
