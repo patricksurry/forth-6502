@@ -84,7 +84,7 @@ ok:
         EXPECTWC TST, expected, label
     .endmac
 
-    .macro EXPECTSTR actual, expected, label
+    .macro _EXPECTSTR actual, expected, label, mode
     .local strdat, next, done
         _EXPECTPRE label
         lda #0
@@ -97,7 +97,11 @@ strdat:
 next:   iny
         lda strdat,y
         beq done
+    .if mode = 1
         cmp (actual),y
+    .else
+        cmp actual,y
+    .endif
         beq next
         iny
         sty TST
@@ -105,9 +109,17 @@ done:
         _EXPECTPOST
     .endmac
 
+    .macro EXPECTSTR actual, expected, label
+        _EXPECTSTR actual, expected, label, 0
+    .endmac
+
+    .macro EXPECTISTR actual, expected, label
+        _EXPECTSTR actual, expected, label, 0
+    .endmac
 
     .segment "TEST"
 test_main:
+        cld
         lda #0
         EXPECTAC 0, "failures"  ; write test header
         ; modules will write further tests to this segment

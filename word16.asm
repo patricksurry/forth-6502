@@ -275,13 +275,13 @@ done:
     .macro _SGNW target, mode
     .local setflags
         _EQUWC target, 0, mode, 1   ; hi2f stores hi byte in _F
-        beq setflags  ; Z=1 => _F = 0
-        lda _F
+        beq setflags    ; Z=1 => _F = 0
+        lda _F          ; hi byte, which might still be zero
         bne setflags
-        inc _F      ; make sure flag byte is non-zero
+        inc _F          ; _F => 1 to clear Z flag
 setflags:
         lda #$ff
-        bit _F      ; N = bit7, V = bit6, Z = ?0
+        bit _F          ; N = bit7, V = bit6, Z = #$ff & _F, i.e. _F == 0
     .endmac
 
     .macro SGNW target

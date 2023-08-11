@@ -3,6 +3,16 @@
 
     .include "word16.asm"
 
+    .macro STRN s, pad
+        ; write s as <length byte>, s[, padding]
+        ; where padding aligns total length to multiple of pad
+        .byte .strlen(s)
+        .byte s
+    .ifnblank pad
+        .res ((-(.strlen(s) + 1) .mod pad) + pad) .mod pad
+    .endif
+    .endmac
+
     .zeropage
 
 FLG:    .res 1
@@ -12,7 +22,7 @@ LEN:    .res 1
 TMP:    .res 1
         .res 1
 
-STRBUF: .res 32
+FMTBUF: .res 32
 
     .code
 
@@ -81,7 +91,7 @@ digitlist:
 
 fmtint:
     .proc _fmtint
-        ; fmtint :: AW, BW, A=radix => string *BW, LEN ## Y, AW
+        ; fmtint(AW: number, A=radix), sets LEN, clobbers Y, AW
         sta TMP
         SETWA CW        ; radix
         ldy #0
@@ -89,7 +99,7 @@ fmtint:
         bit AW+1
         bpl nosign
         lda #'-'        ; negative?
-        sta (BW),y
+        sta FMTBUF,y
         inc IDX
         NEGWW AW,AW
 nosign:
@@ -103,11 +113,11 @@ findpfx:
         ; with known radix r, display 0r prefix
         ldy IDX
         lda #'0'
-        sta (BW),y
+        sta FMTBUF,y
         iny
         lda radixlist,x
         ora #($ff ^ upcase_mask) ; use lower case 0x, 0b, 0o etc
-        sta (BW),y
+        sta FMTBUF,y
         iny
         sty IDX
 calclen:
@@ -129,7 +139,7 @@ next:
         ldx EW
         lda digitlist,x
         ldy IDX
-        sta (BW),y
+        sta FMTBUF,y
         EQUWC CW, 0
         beq done
         CPYWW CW, AW
@@ -176,7 +186,7 @@ nosign:
         bne digits
         iny             ; look for radix
         cpy LEN
-        beq invalid
+        beq done        ; 0 or -0 are valid
         lda (AW),y
         and #upcase_mask
         ldx #4
@@ -206,6 +216,12 @@ notlast:
         sbc TMP
         sta ERR
         rts
+done:
+        lda FLG
+        beq positive
+        NEGWW BW, BW        ; negate value
+positive:
+        rts
 digits:
         ; check digit is valid 0 <= d < radix
         sec
@@ -234,12 +250,6 @@ checkmax:
         beq done
         lda (AW),y
         jmp digits
-done:
-        lda FLG
-        beq positive
-        NEGWW BW, BW        ; negate value
-positive:
-        rts
     .endproc
 
 
@@ -254,21 +264,15 @@ positive:
 
         jmp test_string
 
-banana:
-        .byte "banana"
-strint1:
-        .byte 4, "1234"
-strint2:
-        .byte 4, "-456"
-strint3:
-        .byte 10, "0b00101010"
-strint4:
-        .byte 6, "-0o754"
-strint5:
-        .byte 6, "0xbead"
+banana:         .byte "banana"
+strint0:        STRN "0"
+strint1:        STRN "1234"
+strint2:        STRN "-456"
+strint3:        STRN "0b00101010"
+strint4:        STRN "-0o754"
+strint5:        STRN "0xbead"
 
 test_string:
-
         lda #<banana
         sta AW
         lda #>banana
@@ -278,26 +282,33 @@ test_string:
         EXPECTAC $33, "hashxrl3"
 
         SETWC AW, 32767
-        SETWC BW, STRBUF
         lda #10
         jsr fmtint
-        EXPECTSTR BW, "32767", "fmtint MAXINT"
+        EXPECTSTR FMTBUF, "32767", "fmtint MAXINT"
+        lda LEN
+        EXPECTAC 5, "fmtint LEN"
 
         SETWC AW, -32768
-        SETWC BW, STRBUF
         lda #10
         jsr fmtint
-        EXPECTSTR BW, "-32768", "fmtint MININT"
+        EXPECTSTR FMTBUF, "-32768", "fmtint MININT"
 
         SETWC AW, -1234
         lda #$10
         jsr fmtint
-        EXPECTSTR BW, "-0x4D2", "fmtint -hex"
+        EXPECTSTR FMTBUF, "-0x4D2", "fmtint -hex"
 
         SETWC AW, 1234
         lda #2
         jsr fmtint
-        EXPECTSTR BW, "0b10011010010", "fmtint bin"
+        EXPECTSTR FMTBUF, "0b10011010010", "fmtint bin"
+
+        lda strint0
+        sta LEN
+        SETWC AW, strint0+1
+        jsr parseint
+        lda ERR
+        EXPECTAC 0, "parseint 0"
 
         lda strint1
         sta LEN

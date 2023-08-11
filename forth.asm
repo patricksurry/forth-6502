@@ -5,6 +5,7 @@
     .setcpu "6502"
     .feature c_comments
     .feature underline_in_numbers
+    .feature string_escapes
 
 __FORTH_VERSION__ = 1
 
@@ -17,11 +18,13 @@ __RETSTACK_START__ = __STACK_START__ - __STACK_SIZE__
     .include "word16.asm"
 
     .macro GETC
-    .local wait
-wait:
-        lda $f004
+    .local wait, ok
+wait:   lda $f004
         beq wait
-        PUTC
+        cmp #$0d  ; CR -> LF
+        bne ok
+        lda #$0a
+ok:     PUTC
     .endmac
 
     .macro PUTC
@@ -36,18 +39,17 @@ wait:
         jmp _NEXT
     .endmac
 
-    .macro STRN s, pad
-        .byte .strlen(s)
-        .byte s
-    .ifnblank pad
-        .res (.strlen(s) + 1) .mod pad
-    .endif
-    .endmac
-
     .macro LSTRN s
         .word LITSTRING
         STRN s, 2
     .endmac
+
+    .data
+WORDBUF: .res 256
+
+PRELUDE:
+    .incbin "forth.f"
+PRELUDE_end:
 
     .code
 
@@ -65,13 +67,15 @@ _NEXT:
         ; we jump to the target codeword's code after incrementing PC
         ; leaving AW containing the address of the codeword
         CPYIWW PC, AW       ; now AW contains the codeword's address
-        INCPC               ; next codeword to execute
+        INCPC               ; codeword to execute after we finish this one
         ; we need to jump to the address stored at the address stored in AW
         CPYIWW AW, BW       ; now BW has the interpreter address
-        JMP (BW)            ; run the word's interpreter code
+nextword:                   ; useful breakpoint to step through words
+        jmp (BW)            ; run the word's interpreter code
 
 forth:
         ; initial entry point
+        cld
         SETWC SP, __STACK_START__
         SETWC PC, cold_start
         NEXT
@@ -91,10 +95,50 @@ F_IMMED     = %1000_0000
 F_HIDDEN    = %0010_0000
 F_LENMASK   = %0001_1111
 
-link .set 0
+/*
+    Each Forth word has a layout like this (adapted from Jonesforth):
+
+	  ptr to prev word          address of code interpreter (DOCOL or @code)
+       ^                           ^
+	   |         name of word      |
+	   |            ^              |
+	+--|------+---+-|-+---+---+----|-----+------------------+-----------+
+	| link    | 3 | D | U | P | codeword |  ... code ...    | NEXT/EXIT |
+	+|--------+-|-+---+---+---+|---------+|-----------------+-----------+
+     |          v              |          v
+     |     length + flags      |          @code (>DFA)
+     v                         v
+     DUP_header sym (FIND)     DUP sym (>CFA)
+
+    Native words have a codeword which is just @code, so jmp (codeword)
+    simply executes the native code, which ends with NEXT.
+
+    Compiled words have code which is a list of word pointers and codeword DOCOL.
+    This executes each word in turn ending with EXIT which pops the DOCOL ret stack
+    and falls through to NEXT.
+
+    We set up a number of macros (like Jonesforth) so that we can define
+    variations on this structure.  All are based on _DEFWORD which creates
+    the first part of the header (link, nstr).  The derived macros are:
+
+        DEFCODE - define a native word (assembly code ending with NEXT)
+        DEFWORD - define a compiled word (list of forth words ending with EXIT)
+        DEFVAR - define a word that pushes its address to the stack (see @, !)
+        DEFCONST - define a word that pushes a constant to the stack
+
+    Useful Forth words to manipulate the word structure:
+
+        FIND - searches the linked list for a words LINK ptr
+        >CFA - advances from link pointer to codeword ptr
+        >DFA - advances from link pointer to code (data) ptr
+        .NAME - converts a link pointer to name sptr len
+
+*/
+
+link .set 0         ; this counts word defs so we can generate linked list of symbols
 
     .macro _DEFWORD name, label, flags
-        ; define a forth word
+
 ; symbol for linked list
 .ident (.sprintf("__link__%04d", link+1)):
 ; sybmol for debugging
@@ -141,17 +185,17 @@ code:
     .endmac
 
     .macro DEFCONST name, label, flags, value
-        ; define word that fetches constant to stack
+        ; define word that pushes constant to stack
         DEFCODE name, label, flags
-        PUSHW SP, value
+        PUSHC SP, value
         NEXT
     .endmac
 
     .macro DEFVAR name, label, flags, value
     .local vptr
-        ; define word that returns value of a variable
+        ; define word that returns address of a variable
         DEFCODE name, label, flags
-        PUSHW SP, vptr
+        PUSHC SP, vptr
         NEXT
 vptr:
     .ifnblank label
@@ -172,8 +216,9 @@ vptr:
 ; core constants
 
         DEFCONST "VERSION",,, __FORTH_VERSION__ ; current version of this forth
-        DEFCONST "R0",,, __RETSTACK_START__ ; top of return stack
-        DEFCONST "DOCOL", "_DOCOL",, DOCOL   ; Pointer to DOCOL.
+        DEFCONST "S0",,, __STACK_START__        ; top of param stack
+        DEFCONST "R0",,, __RETSTACK_START__     ; top of return stack
+        DEFCONST "DOCOL", "_DOCOL",, DOCOL      ; pointer to DOCOL
         DEFCONST "F_IMMED", "_F_IMMED",, F_IMMED		; Flag values
         DEFCONST "F_HIDDEN", "_F_HIDDEN",,  F_HIDDEN
         DEFCONST "F_LENMASK", "_F_LENMASK",, F_LENMASK
@@ -202,10 +247,19 @@ vptr:
 
     .endif
 
+        ; EXIT :: adr -R-
         ; when we've finished a Forth word, we just recover the old PC and proceed
         DEFCODE "EXIT"
         POPW RP, PC
         NEXT
+
+        ; CALL :: wadr --
+        ; execute the word on the stack like a subroutine; cf NEXT
+        ; we don't increment PC so execution continues with the word after this one
+        DEFCODE "CALL"
+        POPW SP, AW     ; AW contains the address of the codeword (required for DOCOL)
+        CPYIWW AW, BW   ; Indirect copy so BW contains the codeword itself
+        jmp (BW)        ; jump to the codeword (address of interpreter)
 
         ; DROP :: x --
         DEFCODE "DROP"
@@ -282,7 +336,6 @@ done:
 
 ; ---------------------------------------------------------------------
 ; comparisons
-
 
         ; = :: x y -- 0 | 1
         DEFCODE "=", "EQU"
@@ -391,6 +444,7 @@ result: txa
     .endproc
 
         ; 0< :: x -- 0 | 1
+        ; this tests if x < 0, ie. x 0< is the same as x 0 <
         DEFCODE "0<", "ZLT"
     .proc _zlt
         ldx #0
@@ -407,7 +461,8 @@ result: txa
     .proc _zgt
         ldx #0
         SGNIW SP
-        bpl result
+        beq result
+        bmi result
         inx
 result: txa
         SETIWA SP
@@ -469,8 +524,8 @@ result: txa
 
         ; /MOD :: num den -- rem quo
         DEFCODE "/MOD", "DIVMOD"
-        POPW SP, AW
         POPW SP, BW
+        POPW SP, AW
 ;TODO DIVIW ....
         DIVWWWW AW, BW, CW, DW ; CW is quotient
         PUSHW SP, DW
@@ -498,8 +553,9 @@ result: txa
         INCPC           ; and skip it
         NEXT
 
-        ; LIT :: -- sptr len
-        ; push the next word(s) as a length delim string the stack
+        ; LITSTRING :: -- sptr len
+        ; push subsequent bytes to the stack as a length delim string
+        ; padded to a word boundary
         DEFCODE "LITSTRING"
         CPYWW PC, AW
         INCW AW
@@ -533,13 +589,13 @@ result: txa
         ; RSP@ ::  -R- sp
         ; push the current return stack pointer on the stack
         DEFCODE "RSP@", "RSPFETCH"
-        PUSHW RP, RP
+        PUSHW SP, RP
         NEXT
 
         ; RSP! :: sp -R-
         ; set the return stack pointer from the top of the return stack
         DEFCODE "RSP!", "RSPSTORE"
-        POPW RP, RP
+        POPW SP, RP
         NEXT
 
         ; RDROP :: x -R-
@@ -640,12 +696,12 @@ result: txa
         POPB SP, LEN
         POPW SP, AW
         ldy #0
-        cpy LEN
-loop:   beq done
+loop:   cpy LEN
+        beq done
         lda (AW),y
         PUTC
         iny
-        bne loop
+        jmp loop
 done:   NEXT
     .endproc
 
@@ -653,7 +709,7 @@ done:   NEXT
         ; read a word from input
         DEFCODE "WORD"
     .proc _word
-        PUSHC SP, STRBUF
+        PUSHC SP, WORDBUF
         ldy #0
 skipspace:
         GETC
@@ -667,7 +723,7 @@ nocomment:
         cmp #$21    ; space + 1
         bmi skipspace
 store:
-        sta STRBUF,y
+        sta WORDBUF,y
         iny
         GETC
         cmp #$21
@@ -688,13 +744,35 @@ store:
         PUSHB SP, ERR   ; number of unconverted chars (0 => success)
         NEXT
 
+        ; N>$ :: x -- sptr len
+        DEFCODE "N>$", "N2STRN"
+        POPW SP, AW
+        lda BASE_value
+        jsr fmtint
+        PUSHC SP, FMTBUF
+        PUSHB SP, LEN
+        NEXT
+
+        ; NAME :: link -- sptr len
+        ; put the name of a word on the stack
+        DEFCODE ".NAME", "_NAME"
+        POPW SP, AW
+        ldy #2
+        lda (AW),y
+        and #F_LENMASK
+        sta LEN
+        ADDWCW AW, 3, AW
+        PUSHW SP, AW
+        PUSHB SP, LEN
+        NEXT
+
         ; FIND :: sptr len -- link | nul
         DEFCODE "FIND"
     .proc _find
         POPB SP, LEN
         POPW SP, AW
         CPYWW LATEST_value, BW
-nextword:
+nextlink:
         EQUWC BW, 0         ; BW is curr ptr in linked lst
         beq done
         ldy #2
@@ -717,10 +795,12 @@ done:
         NEXT
 nomatch:
         CPYIWW BW, BW       ; check prev word
-        jmp nextword
+        jmp nextlink
     .endproc
 
         ; >CFA :: link -- cptr
+        ; convert a header field address, e.g. a link from find,
+        ; to the corresponding codeword field address
         DEFCODE ">CFA", "TCFA"
         POPW SP, AW
         ldy #2
@@ -733,10 +813,30 @@ nomatch:
         NEXT
 
         ; >DFA :: link -- dptr
+        ; convert a header field address to the word's data field address (code)
+        ; our words all have a two-byte codeword so >DFA is just >CFA + 2
         DEFWORD ">DFA", "TDFA"
         .word TCFA
         .word INC2
         .word EXIT
+
+        ; >HFA :: adr -- link | 0
+        DEFCODE ">HFA", "THFA"
+        ; find the first word whose header field is at or before adr
+        ; the second call is a no-op: someadr >HFA >HFA
+        ; this is also a no-op: link >CFA >HFA
+    .proc _thfa
+        POPW SP, AW
+        CPYWW LATEST_value, BW  ; latest (highest) HFA
+next:
+        SUBWWW AW, BW, CW   ; CW = AW - BW
+        bcs done            ; no borrow, so AW >= BW
+        CPYIWW BW, BW       ; follow linked list to prev HFA
+        jmp next            ; eventually BW = 0 which will break the loop
+done:
+        PUSHW SP, BW        ; push match or 0
+        NEXT
+    .endproc
 
         ; CREATE :: sptr len --
         ; create the header for new word defintion, updates HERE, LATEST
@@ -744,26 +844,29 @@ nomatch:
     .proc _create
         POPB SP, LEN
         POPW SP, AW
-        ; write the link to point back to latest
+        ; stash the heap ptr in zp
         CPYWW HERE_value, BW
+        ; write pointer back to prev word
         CPYWIW LATEST_value, BW
-        ; and update latest to point here
-        CPYWW HERE_value, LATEST_value
-        ; write the length byte followed by the string
-        ldy #2
+        ; update latest pointer
+        CPYWW BW, LATEST_value
+        ; skip link word
+        lda #2
+        ADDWAW BW, BW
+        ldy #0
         lda LEN
-        sta (BW),y
-        lda #3
-        ADDWAW BW,BW        ; here += 3
-        ldy LEN
-copy:
+        sta (BW),y              ; write the length
+        INCW BW
+        ldy #0
+copy:   cpy LEN                 ; write the name
+        beq done
         lda (AW),y
         sta (BW),y
-        dey
+        iny
         bne copy
-        lda LEN
-        ADDWAW BW,BW        ; here += LEN
-        CPYWW BW,HERE_value
+done:   tya                     ; Y is LEN after loop
+        ADDWAW BW,BW
+        CPYWW BW, HERE_value    ; update the heap pointer
         NEXT
     .endproc
 
@@ -791,7 +894,7 @@ copy:
         NEXT
 
         ; : :: --
-        ; start definition of anew word
+        ; start definition of a new word
         DEFWORD ":", "COLON"
 	    .word WORD		            ; Get the name of the new word
 	    .word CREATE		        ; CREATE the dictionary entry / header
@@ -811,12 +914,31 @@ copy:
         ; IMMEDIATE :: --
         ; toggle F_IMMED on latest word
         DEFCODE "IMMEDIATE", , F_IMMED
-        ldy #2
         CPYWW LATEST_value, AW
+        ldy #2
         lda (AW),y
         eor #F_IMMED
         sta (AW),y
         NEXT
+
+        ; ?IMMEDIATE link :: 0 | 1
+        ; return 1 if word has F_IMMED set or state is 0
+        DEFCODE "?IMMEDIATE", "QIMMEDIATE"
+    .proc _qimmediate
+        POPW SP, AW
+        ldy #2
+        lda (AW),y
+        dey             ; y = 1
+        and #F_IMMED
+        bne immediate   ; word has F_IMMED set
+        lda STATE_value
+        beq immediate   ; or state is zero
+        dey             ; else y = 0
+immediate:
+        sty TMP
+        PUSHB SP, TMP
+        NEXT
+    .endproc
 
         ; HIDDEN :: addr --
         ; toggle F_HIDDEN on word at addr
@@ -859,7 +981,7 @@ copy:
         POPW SP, AW
         EQUWC AW, 0
         beq BRANCH+2     ; jump to unconditional branch above
-        INCPC
+        INCPC            ; skip the offset
         NEXT
 
         DEFWORD "QUIT"
@@ -869,35 +991,36 @@ copy:
 
         DEFWORD "INTERPRET"
         .word WORD      ; -- sptr len
-        .word _2DUP
-        .word FIND      ; sptr len -- link | nul
-        .word DUP       ; sptr len link link
+        .word _2DUP     ; sptr len -- sptr len sptr len
+        .word FIND      ; sptr len sptr len -- sptr len link | nul
+        .word DUP       ; copy link to test
 check_found:
-        .word ZBRANCH, not_found - check_found - 2
+        .word ZBRANCH, maybe_number - check_found - 2
         .word NROT, _2DROP ; drop copy of word keeping link
-        .word STATE
+        .word DUP, TCFA, SWAP, QIMMEDIATE   ; codeword 1=immed|0=compile
 check_mode:
-        .word ZBRANCH, execute - check_mode - 2
-        .word COMMA, EXIT ; compiled
-execute:
-        ; jmp to it like next but without affecting PC
-        ; so NEXT eventually carries on with BRANCH in QUIT
-;TODO        .word JUMP
+        .word ZBRANCH, compile - check_mode - 2
+        .word CALL, EXIT ; execute word right away
+compile:
+        .word COMMA, EXIT ; add word to compiled code
 
-not_found:
+maybe_number:
+        .word DROP      ; drop the nul link
         .word NUMBER    ; sptr len -- value err
-        .word ZEQU
-        .word ZBRANCH, error - not_found - 2
-
-        .word STATE
-lit_mode:
-        .word ZBRANCH, pushlit - lit_mode - 2
-        .word LIT, COMMA, COMMA
-pushlit:
-        .word EXIT
-error:
-        LSTRN "? parse error"
+check_number:
+        .word ZBRANCH, is_number - check_number - 2
+        .word DROP      ; drop the ptr
+        LSTRN " ? parse error\n"
         .word TELL, EXIT
+
+is_number:
+        .word STATE, FETCH
+lit_mode:
+        .word ZBRANCH, lit_immed - lit_mode - 2
+        .word TICK, LIT, COMMA, COMMA     ; compile LIT, <value>
+lit_immed:
+        .word EXIT      ; just leave it on the stack
+error:
 
 ; ---------------------------------------------------------------------
 ; a few exploratory forth words for testing
@@ -920,7 +1043,9 @@ error:
 ; : FIB 0 1 ROT 0 ?DO OVER + SWAP LOOP DROP ;
         .word EXIT
 
-        ; this is the head of our linked list of words
+; ---------------------------------------------------------------------
+; a dummy word that marks the end of our linked list of words
+
         DEFWORD "LASTWORD"
         .word EXIT
 
@@ -942,48 +1067,58 @@ error:
     .segment "TEST"
         jmp test_forth
 
-test_numberok:
+phrase_version:   .word VERSION, _RTS
+phrase_ge:    .word LIT, 3, LIT, 2, GE, _RTS
+phrase_zge0:  .word LIT, 0, ZGE, _RTS
+phrase_zge1:  .word LIT, 1, ZGE, _RTS
+phrase_zge_1: .word LIT, $10000 - 1, ZGE, _RTS
+phrase_numberok:
         LSTRN "48813"  ; adds LITSTRING, leading length and pad to stack word width
         .word NUMBER, _RTS
-
-test_numberbad:
+phrase_numberbad:
         LSTRN "banana"
         .word NUMBER, _RTS
-
-test_find:
+phrase_find:
         LSTRN "-ROT"
         .word FIND, _RTS
-
-test_ge:    .word LIT, 3, LIT, 2, GE, _RTS
-test_zge0:  .word LIT, 0, ZGE, _RTS
-test_zge1:  .word LIT, 1, ZGE, _RTS
-test_zge_1: .word LIT, $10000 - 1, ZGE, _RTS
+phrase_thfa: .word LIT, SWAP, THFA, THFA, DUP, TCFA, DUP, THFA, LIT, $ff, THFA, _RTS
+; expect: SWAP_header, SWAP, SWAP_header, 0
 
 test_forth:
         SETWC SP, __STACK_START__
         SETWC RP, __RETSTACK_START__
 
-        TESTPHRASE test_numberok
+        TESTPHRASE phrase_version
+        EXPECTPOP __FORTH_VERSION__, "VERSION"
+
+        TESTPHRASE phrase_ge
+        EXPECTPOP 1, "3 >= 2"
+
+        TESTPHRASE phrase_zge0
+        EXPECTPOP 1, "0 0>="
+
+        TESTPHRASE phrase_zge1
+        EXPECTPOP 1, "1 0>="
+
+        TESTPHRASE phrase_zge_1
+        EXPECTPOP 0, "-1 0>="
+
+        TESTPHRASE phrase_numberok
         EXPECTPOP 0, "NUMBER ok flg"
         EXPECTPOP 48813, "NUMBER ok val"
 
-        TESTPHRASE test_numberbad
+        TESTPHRASE phrase_numberbad
         EXPECTPOP 6, "NUMBER bad flg"
         EXPECTPOP 0, "NUMBER bad val"
 
-        TESTPHRASE test_find
+        TESTPHRASE phrase_find
         EXPECTPOP NROT_header, "FIND -ROT"
 
-        TESTPHRASE test_ge
-        EXPECTPOP 1, "3 >= 2"
+        TESTPHRASE phrase_thfa
+        EXPECTPOP 0, "0 >HFA"
+        EXPECTPOP SWAP_header, ">CFA >HFA"
+        EXPECTPOP SWAP, ">HFA >CFA"
+        EXPECTPOP SWAP_header, ">HFA >HFA"
 
-        TESTPHRASE test_zge0
-        EXPECTPOP 1, "0 0>="
-
-        TESTPHRASE test_zge1
-        EXPECTPOP 1, "1 0>="
-
-        TESTPHRASE test_zge_1
-        EXPECTPOP 0, "-1 0>="
 .endif
 
