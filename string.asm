@@ -1,4 +1,4 @@
-    .setcpu "6502"
+    .setcpu "65C02"
     .feature c_comments
 
     .include "word16.asm"
@@ -92,14 +92,13 @@ digitlist:
 fmtint:
     .proc _fmtint
         ; fmtint(AW: number, A=radix), sets LEN, clobbers Y, AW
-        sta TMP
+        sta TMP         ; radix
         SETWA CW        ; radix
-        ldy #0
-        sty IDX
+        stz IDX
         bit AW+1
         bpl nosign
         lda #'-'        ; negative?
-        sta FMTBUF,y
+        sta FMTBUF
         inc IDX
         NEGWW AW,AW
 nosign:
@@ -148,7 +147,7 @@ next:
 done:   rts
     .endproc
 
-
+;TODO forth allows prefix #, $, and % for base 10, 16, 2, e.g. #-123
 parseint:
     .proc _parseint
         ; parseint :: AX, LEN => BX, ERR ## X, Y; FLG, IDX, TMP
@@ -171,6 +170,7 @@ parseint:
         beq invalid
         sty FLG         ; sign=0
         sty ERR         ; err=0
+;TODO shouldn't ref this here, pass as ACC?
         lda BASE_value  ; forth variable value
         sta TMP         ; default radix
         lda (AW),y
@@ -292,6 +292,11 @@ test_string:
         lda #10
         jsr fmtint
         EXPECTSTR FMTBUF, "-32768", "fmtint MININT"
+
+        SETWC AW, 23290
+        lda #$10
+        jsr fmtint
+        EXPECTSTR FMTBUF, "0x5AFA", "fmtint hex"
 
         SETWC AW, -1234
         lda #$10

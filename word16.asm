@@ -25,7 +25,7 @@
 .ifndef __WORD16__
 __WORD16__ = 1
 
-    .setcpu "6502"
+    .setcpu "65C02"
     .feature c_comments
 
 ; Define zero page "registers" in an uninitialised segment
@@ -96,12 +96,12 @@ SR_ZVN = SR_Z | SR_V | SR_N
     .else
         sta target
     .endif
-    lda #0
     .if mode
         iny
+        lda #0
         sta (target),y
     .else
-        sta target+1
+        stz target+1
     .endif
     .endmac
 
@@ -293,17 +293,7 @@ setflags:
     .endmac
 
 ; ---------------------------------------------------------------------
-; AND/OR/XOR
-
-; TODO
-
-; ---------------------------------------------------------------------
-; LSR/LSL/ROR/ROL
-
-; TODO
-
-; ---------------------------------------------------------------------
-; increment / decrement INC/DEC - note no indirect version
+; increment / decrement INC/DEC - note no indirect addressing for INC/DEC
 
     .macro INCW target
         ; increment a two-byte value
@@ -319,7 +309,7 @@ done:
     ; decrement a two-byte value
     .local done
         lda target
-        bne done   ; dec high byte .if low is zero
+        bne done   ; dec high byte only if low is zero
         dec target+1
 done:
         dec target
@@ -329,7 +319,7 @@ done:
 ; add/subtract ADD/SUB
 
     .macro _PMWCW op, source, value, target, source_mode, target_mode
-        ; op 0=adc/1=sbc, mode 0=abs/1=ind
+        ; op adc/sbc, mode 0=abs/1=ind
     .local done
     unsafe .set 0
     .if .xmatch(source, target) && source_mode = 1 && target_mode = 0
@@ -340,7 +330,7 @@ done:
     .if source_mode | target_mode
         ldy #0
     .endif
-    .if op
+    .if .xmatch(op, sbc)
         sec
     .else
         clc
@@ -350,11 +340,7 @@ done:
     .else
         lda source
     .endif
-    .if op
-        sbc #<(value)
-    .else
-        adc #<(value)
-    .endif
+    op #<(value)
     .if target_mode
         sta (target),y
     .else
@@ -365,8 +351,8 @@ done:
         .endif
     .endif
     .if .const(value) && >(value) = 0 && .xmatch(source, target) && (!source_mode) && (!target_mode)
-        ; adding single byte constant to self in immediate mode
-        .if op
+        ; adc/sbc single byte constant to self in immediate mode
+        .if .xmatch(op, sbc)
         bcs done
         dec source+1
         .else
@@ -383,13 +369,9 @@ done:
         .else
             lda source+1
         .endif
-        .if op
-            sbc #>(value)
-        .else
-            adc #>(value)
-        .endif
+        op #>(value)
         .if target_mode
-            sta (target)),y
+            sta (target),y
         .else
             sta target+1
             .if unsafe
@@ -401,45 +383,45 @@ done:
     .endmac
 
     .macro ADDWCW source, value, target
-        _PMWCW 0, source, value, target, 0, 0
+        _PMWCW adc, source, value, target, 0, 0
     .endmac
 
     .macro ADDWCIW source, value, target
-        _PMWCW 0, source, value, target, 0, 1
+        _PMWCW adc, source, value, target, 0, 1
     .endmac
 
     .macro ADDIWCW source, value, target
-        _PMWCW 0, source, value, target, 1, 0
+        _PMWCW adc, source, value, target, 1, 0
     .endmac
 
     .macro ADDIWCIW source, value, target
-        _PMWCW 0, source, value, target, 1, 1
+        _PMWCW adc, source, value, target, 1, 1
     .endmac
 
 
     .macro SUBWCW source, value, target
-        _PMWCW 1, source, value, target, 0, 0
+        _PMWCW sbc, source, value, target, 0, 0
     .endmac
 
     .macro SUBWCIW source, value, target
-        _PMWCW 1, source, value, target, 0, 1
+        _PMWCW sbc, source, value, target, 0, 1
     .endmac
 
     .macro SUBIWCW source, value, target
-        _PMWCW 1, source, value, target, 1, 0
+        _PMWCW sbc, source, value, target, 1, 0
     .endmac
 
     .macro SUBIWCIW source, value, target
-        _PMWCW 1, source, value, target, 1, 1
+        _PMWCW sbc, source, value, target, 1, 1
     .endmac
 
 
     .macro _PMWWW op, left, right, target, left_mode, right_mode, target_mode
-        ; op 0=adc/1=sbc, mode 0=abs/1=ind
+        ; op adc/sbc, mode 0=abs/1=ind
         ; stomps y; C=16bit carry
 
     .if .xmatch(left, right) && left_mode = right_mode
-        .if op
+        .if .xmatch(op, sbc)
             .warning .sprintf ("SUB %s %s ... is redundant, use SETWC ..., 0 instead?", .string(left), .string(right))
         .else
             .warning .sprintf ("ADD %s %s ... is redundant, use ASL ... instead?", .string(left), .string(right))
@@ -460,7 +442,7 @@ done:
     .if left_mode | right_mode | target_mode
         ldy #0
     .endif
-    .if op
+    .if .xmatch(op, sbc)
         sec
     .else
         clc
@@ -471,17 +453,9 @@ done:
         lda left
     .endif
     .if right_mode
-        .if op
-        sbc (right),y
-        .else
-        adc (right),y
-        .endif
+        op (right),y
     .else
-        .if op
-        sbc right
-        .else
-        adc right
-        .endif
+        op right
     .endif
 
     .if target_mode
@@ -498,17 +472,9 @@ done:
         lda left+1
     .endif
     .if right_mode
-        .if op
-        sbc (right),y
-        .else
-        adc (right),y
-        .endif
+        op (right),y
     .else
-        .if op
-        sbc right+1
-        .else
-        adc right+1
-        .endif
+        op right+1
     .endif
 
     .if target_mode
@@ -519,70 +485,69 @@ done:
     .endmac
 
     .macro ADDWWW left, right, target
-        _PMWWW 0, left, right, target, 0, 0, 0
+        _PMWWW adc, left, right, target, 0, 0, 0
     .endmac
 
     .macro ADDWWIW left, right, target
-        _PMWWW 0, left, right, target, 0, 0, 1
+        _PMWWW adc, left, right, target, 0, 0, 1
     .endmac
 
     .macro ADDWIWW left, right, target
-        _PMWWW 0, left, right, target, 0, 1, 0
+        _PMWWW adc, left, right, target, 0, 1, 0
     .endmac
 
     .macro ADDWIWIW left, right, target
-        _PMWWW 0, left, right, target, 0, 1, 1
+        _PMWWW adc, left, right, target, 0, 1, 1
     .endmac
 
     .macro ADDIWWW left, right, target
-        _PMWWW 0, left, right, target, 1, 0, 0
+        _PMWWW adc, left, right, target, 1, 0, 0
     .endmac
 
     .macro ADDIWWIW left, right, target
-        _PMWWW 0, left, right, target, 1, 0, 1
+        _PMWWW adc, left, right, target, 1, 0, 1
     .endmac
 
     .macro ADDIWIWW left, right, target
-        _PMWWW 0, left, right, target, 1, 1, 0
+        _PMWWW adc, left, right, target, 1, 1, 0
     .endmac
 
     .macro ADDIWIWIW left, right, target
-        _PMWWW 0, left, right, target, 1, 1, 1
+        _PMWWW adc, left, right, target, 1, 1, 1
     .endmac
 
 
     .macro SUBWWW left, right, target
-        _PMWWW 1, left, right, target, 0, 0, 0
+        _PMWWW sbc, left, right, target, 0, 0, 0
     .endmac
 
     .macro SUBWWIW left, right, target
-        _PMWWW 1, left, right, target, 0, 0, 1
+        _PMWWW sbc, left, right, target, 0, 0, 1
     .endmac
 
     .macro SUBWIWW left, right, target
-        _PMWWW 1, left, right, target, 0, 1, 0
+        _PMWWW sbc, left, right, target, 0, 1, 0
     .endmac
 
     .macro SUBWIWIW left, right, target
-        _PMWWW 1, left, right, target, 0, 1, 1
+        _PMWWW sbc, left, right, target, 0, 1, 1
     .endmac
 
     .macro SUBIWWW left, right, target
-        _PMWWW 1, left, right, target, 1, 0, 0
+        _PMWWW sbc, left, right, target, 1, 0, 0
     .endmac
 
     .macro SUBIWWIW left, right, target
-        _PMWWW 1, left, right, target, 1, 0, 1
+        _PMWWW sbc, left, right, target, 1, 0, 1
     .endmac
 
     .macro SUBIWIWW left, right, target
-        _PMWWW 1, left, right, target, 1, 1, 0
+        _PMWWW sbc, left, right, target, 1, 1, 0
     .endmac
 
     .macro SUBIWIWIW left, right, target
-        _PMWWW 1, left, right, target, 1, 1, 1
+        _PMWWW sbc, left, right, target, 1, 1, 1
     .endmac
-
 
     .macro ADDWAW source, target
         ; target := source + A  ##  A
@@ -599,15 +564,58 @@ done:
 nocarry:
     .endmac
 
+    .macro SUBWAW source, target
+        ; target := source - A  ##  A
+        .local noborrow
+        clc
+        sbc source
+        eor #$ff            ; ~(a - s - 1) == s - a mod 256
+        sta target
+        ; a > s => no borrow, a <= s, borrow (carry clear)
+    .if ! .xmatch(source, target)
+        lda source+1
+        sta target+1
+    .endif
+        bcc noborrow
+        dec target+1
+noborrow:
+    .endmac
+
 ; ---------------------------------------------------------------------
 ; MUL, DIV
 
-;TODO finish me
+    .macro MULWWW left, right, target
+    .local pre, loop, next, safe, done
+    .if .xmatch(left, target) || .xmatch(right, target)
+        .error .sprintf ("MUL: write to input is unsafe")
+    .endif
+        SETWC target, 0
+        sta _F  ; overflow = 0
+        ldx #15
+pre:    ASLW right
+        bcs loop
+        dex
+        bpl pre
+        bmi done
+loop:   ADDWWW target, left, target
+        bcc next
+        inc _F
+next:   dex
+        bmi done
+        ASLW target
+        bcc safe
+        inc _F
+safe:   ASLW right
+        bcc next
+        bra loop
+done:   lda _F
+        cmp #1
+    .endmac
 
     .macro MULWAW source, target
         ; target := source * A  ## A, X, Y, _F
         ; unsigned multiply with C=1 indicating unsigned overflow
-    .local next, loop
+    .local loop, safe, next
         tay
     .if .xmatch(source, target)
         CPYWW source, _TW
@@ -616,9 +624,10 @@ nocarry:
         sta _F     ; carry = 0
         ldx #7
         tya
-loop:
-        ASLW target
-        asl
+loop:   ASLW target
+        bcc safe
+        inc _F
+safe:   asl
         bcc next
         tay
     .if .xmatch(source, target)
@@ -629,8 +638,7 @@ loop:
         tya
         bcc next
         inc _F     ; unsigned overflow
-next:
-        dex
+next:   dex
         bpl loop
         lda _F
         cmp #1      ; C=1 if _F >= 0
@@ -678,22 +686,195 @@ skip:
     .endmac
 
 ; ---------------------------------------------------------------------
-; NOT (logical not)
+; NOT and NEG (logical not and two complement negation)
+
+    .macro _NOTWW source, target, source_mode, target_mode
+    .if source_mode | target_mode
+        ldy #0
+    .endif
+    .if source_mode
+        lda (source),y
+    .else
+        lda source
+    .endif
+        eor #$ff
+    .if target_mode
+        sta (target),y
+    .else
+        sta target
+    .endif
+    .if source_mode | target_mode
+        iny
+    .endif
+    .if source_mode
+        lda (source),y
+    .else
+        lda source+1
+    .endif
+        eor #$ff
+    .if target_mode
+        sta (target),y
+    .else
+        sta target+1
+    .endif
+    .endmac
 
     .macro NOTWW source, target
-        lda source
-        eor #$ff
-        sta target
-        lda source+1
-        eor #$ff
-        sta target+1
+        _NOTWW source, target, 0, 0
+    .endmac
+    .macro NOTWIW source, target
+        _NOTWW source, target, 0, 1
+    .endmac
+    .macro NOTIWW source, target
+        _NOTWW source, target, 1, 0
+    .endmac
+    .macro NOTIWIW source, target
+        _NOTWW source, target, 1, 1
+    .endmac
+
+    .macro _NEGWW source, target, source_mode, target_mode
+        _NOTWW source, target, source_mode, target_mode
+    .if target_mode
+        ADDIWCIW target, 1, target
+    .else
+        INCW target
+    .endif
     .endmac
 
     .macro NEGWW source, target
-        NOTWW source, target
-        INCW target
+        _NEGWW source, target, 0, 0
+    .endmac
+    .macro NEGWIW source, target
+        _NEGWW source, target, 0, 1
+    .endmac
+    .macro NEGIWW source, target
+        _NEGWW source, target, 1, 0
+    .endmac
+    .macro NEGIWIW source, target
+        _NEGWW source, target, 1, 1
     .endmac
 
+; ---------------------------------------------------------------------
+; logical and, or, xor
+
+    .macro _LGCWW op, left, right, target, left_mode, right_mode, target_mode
+    .if left_mode | right_mode | target_mode
+        ldy #0
+    .endif
+    .if left_mode
+        lda (left),y
+    .else
+        lda left
+    .endif
+    .if right_mode
+        op (right),y
+    .else
+        op right
+    .endif
+    .if target_mode
+        sta (target),y
+    .else
+        sta target
+    .endif
+    .if left_mode | right_mode | target_mode
+        iny
+    .endif
+    .if left_mode
+        lda (left),y
+    .else
+        lda left+1
+    .endif
+    .if right_mode
+        op (right),y
+    .else
+        op right+1
+    .endif
+    .if target_mode
+        sta (target),y
+    .else
+        sta target+1
+    .endif
+    .endmac
+
+    .macro ANDWWW left, right, target
+        _LGCWW and, left, right, target, 0, 0, 0
+    .endmac
+    .macro ORWWW left, right, target
+        _LGCWW ora, left, right, target, 0, 0, 0
+    .endmac
+    .macro XORWWW left, right, target
+        _LGCWW eor, left, right, target, 0, 0, 0
+    .endmac
+
+    .macro ANDWWIW left, right, target
+        _LGCWW and, left, right, target, 0, 0, 1
+    .endmac
+    .macro ORWWIW left, right, target
+        _LGCWW ora, left, right, target, 0, 0, 1
+    .endmac
+    .macro XORWWIW left, right, target
+        _LGCWW eor, left, right, target, 0, 0, 1
+    .endmac
+
+    .macro ANDWIWW left, right, target
+        _LGCWW and, left, right, target, 0, 1, 0
+    .endmac
+    .macro ORWIWW left, right, target
+        _LGCWW ora, left, right, target, 0, 1, 0
+    .endmac
+    .macro XORWIWW left, right, target
+        _LGCWW eor, left, right, target, 0, 1, 0
+    .endmac
+
+    .macro ANDWIWIW left, right, target
+        _LGCWW and, left, right, target, 0, 1, 1
+    .endmac
+    .macro ORWIWIW left, right, target
+        _LGCWW ora, left, right, target, 0, 1, 1
+    .endmac
+    .macro XORWIWIW left, right, target
+        _LGCWW eor, left, right, target, 0, 1, 1
+    .endmac
+
+    .macro ANDIWWW left, right, target
+        _LGCWW and, left, right, target, 1, 0, 0
+    .endmac
+    .macro ORIWWW left, right, target
+        _LGCWW ora, left, right, target, 1, 0, 0
+    .endmac
+    .macro XORIWWW left, right, target
+        _LGCWW eor, left, right, target, 1, 0, 0
+    .endmac
+
+    .macro ANDIWWIW left, right, target
+        _LGCWW and, left, right, target, 1, 0, 1
+    .endmac
+    .macro ORIWWIW left, right, target
+        _LGCWW ora, left, right, target, 1, 0, 1
+    .endmac
+    .macro XORIWWIW left, right, target
+        _LGCWW eor, left, right, target, 1, 0, 1
+    .endmac
+
+    .macro ANDIWIWW left, right, target
+        _LGCWW and, left, right, target, 1, 1, 0
+    .endmac
+    .macro ORIWIWW left, right, target
+        _LGCWW ora, left, right, target, 1, 1, 0
+    .endmac
+    .macro XORIWIWW left, right, target
+        _LGCWW eor, left, right, target, 1, 1, 0
+    .endmac
+
+    .macro ANDIWIWIW left, right, target
+        _LGCWW and, left, right, target, 1, 1, 1
+    .endmac
+    .macro ORIWIWIW left, right, target
+        _LGCWW ora, left, right, target, 1, 1, 1
+    .endmac
+    .macro XORIWIWIW left, right, target
+        _LGCWW eor, left, right, target, 1, 1, 1
+    .endmac
 
 ; ---------------------------------------------------------------------
 ; PUSH, POP
@@ -701,15 +882,16 @@ skip:
 ; currently implemented with stack growing downward,
 ; and SP pointing to the latest valid element
 
+; 6168 core bytes
+
     .macro GROW stack, count
         ; GROW SP, {2} :: SP - 2*{2} => SP ## A
-        dec stack+1         ; subtract 256 then add acc as unsigned
         .ifnblank count
-            lda #(256-count*2)
+            lda #(count*2)
         .else
-            lda #254
+            lda #2
         .endif
-        ADDWAW stack, stack
+        SUBWAW stack, stack
     .endmac
 
     .macro SHRINK stack, count
@@ -766,30 +948,47 @@ skip:
 
     .macro POPB stack, target
         ; POPB SP, B :: (SP) => B ## Y
-        ldy #0
-        lda (stack),y
+        lda (stack)
         sta target
         SHRINK stack
     .endmac
 
-    .macro PEEK stack, index, target
-        ; PEEKW SP, i, AW :: (SP), i => AW ## Y
+    .macro _PEEK stack, index, target, word
+        ; PEEK SP, i, AW :: (SP), i => AW ## Y
         ldy #index*2
         lda (stack),y
         sta target
+    .if word
         iny
         lda (stack),y
         sta target+1
+    .endif
+    .endmac
+    .macro PEEK stack, index, target
+        _PEEK stack, index, target, 1
+    .endmac
+    .macro PEEKB stack, index, target
+        _PEEK stack, index, target, 0
     .endmac
 
-    .macro POKE stack, index, source
+    .macro _POKE stack, index, source, word
         ; POKE SP, i, AW :: AW => (SP), i ## Y
         ldy #index*2
         lda source
         sta (stack),y
         iny
+    .if word
         lda source+1
+    .else           ; for POKEB we need to zero the high byte
+        lda #0
+    .endif
         sta (stack),y
+    .endmac
+    .macro POKE stack, index, source
+        _POKE stack, index, source, 1
+    .endmac
+    .macro POKEB stack, index, source
+        _POKE stack, index, source, 0
     .endmac
 
     .macro DUPE stack, from_index, to_index
@@ -873,14 +1072,37 @@ test_word16:
         ASLW AW
         EXPECTWC AW, 468, "ASLW"
 
+        SETWC AW, %0101010101010101
+        SETWC BW, %1010101010101010
+        ANDWWW AW, BW, CW
+        EXPECTWC CW, 0, "ANDWWW"
+
+        XORWWW AW, BW, CW
+        EXPECTWC CW, $10000-1, "XORWWW"
+
         SETWC AW, 123
         lda #35
         ADDWAW AW, BW
         EXPECTWC BW, 158, "ADDWAW"
 
+        SETWC AW, 338
+        lda #101
+        SUBWAW AW, AW
+        EXPECTWC AW, 237, "SUBWAW brw"
+
+        SETWC AW, 123
+        lda #35
+        SUBWAW AW, BW
+        EXPECTWC BW, 88, "SUBWAW"
+
         lda #35
         MULWAW AW, AW
         EXPECTWC AW, 4305, "MULWAW"
+
+        SETWC AW, 345
+        SETWC BW, 678
+        MULWWW AW, BW, CW
+        EXPECTWC CW, 233910, "MULWWW"
 
         SETWC AW, 123
         SETWC BW, 42

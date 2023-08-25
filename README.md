@@ -9,14 +9,12 @@ http://rubbermallet.org/fake6502.c
 
 signed v unsigned comparisons http://6502.org/tutorials/compare_beyond.html
 
-Very simple system calls via control chars to PUTC,
-e.g. $ff <three-bit op | 4 or 5-bit arg>;  send two $ff to escape;
-Model after unix/python file ops, eg return a handle on GETC.
-Use buf pointer at top of zp offset by handle, or just shared buf ptr, length?
-See https://docs.python.org/3/tutorial/inputoutput.html#tut-files
+test suite: https://forth-standard.org/standard/testsuite
+
+
 
 For fancy console could implement simple escape system like https://github.com/patricksurry/eastern-front-1941/blob/main/src/antic/anticmodel.ts#L240
-or memory map a screen?
+or memory map a character display?
 
 
 Setup

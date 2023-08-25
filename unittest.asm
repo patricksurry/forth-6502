@@ -7,7 +7,7 @@
 ; Each test result is displayed in 16 bytes with first byte 0=ok/1=fail
 ; followed by the test name:
 ;
-; 2000: 01 00 66 61 69 6c 75 72 65 73 00 00 00 00 00 00  ..failures......
+; 2000: 01 00 66 61 69 6c 75 72 65 73 00 00 00 00 00 00  ....fail / total
 ; 2010: 01 00 46 41 49 4c 00 00 00 00 00 00 00 00 00 00  ..FAIL..........
 ; 2020: 00 00 53 45 54 49 57 43 00 00 00 00 00 00 00 00  ..SETIWC........
 ; 2030: 00 00 53 45 54 49 57 43 49 00 00 00 00 00 00 00  ..SETIWCI.......
@@ -19,7 +19,7 @@
 .ifndef __UNITTEST__
 __UNITTEST__ = 1
 
-    .setcpu "6502"
+    .setcpu "65C02"
     .feature c_comments
 
     .include "word16.asm"
@@ -32,7 +32,7 @@ test_report := $c000
         ; this will contain a 16 byte summary
         ; plus a 16 byte result for each test
 
-test_index .set 0
+test_index .set 1
 
     .macro _EXPECTPRE desc
     .local next, sptr, test_body
@@ -62,7 +62,7 @@ test_index .set test_index + 1
         beq ok
         ; test failed, increment overall count
         INCW test_report
-ok:
+ok:     INCW test_report+2
     .endmac
 
     .macro EXPECTWC actual, expected, label
@@ -87,9 +87,8 @@ ok:
     .macro _EXPECTSTR actual, expected, label, mode
     .local strdat, next, done
         _EXPECTPRE label
-        lda #0
-        sta TST
-        sta TST+1
+        stz TST
+        stz TST+1
         ldy #$ff
         bne next
 strdat:
@@ -120,8 +119,15 @@ done:
     .segment "TEST"
 test_main:
         cld
-        lda #0
-        EXPECTAC 0, "failures"  ; write test header
+        ldx #$0f
+@next:  lda @header,x
+        sta test_report,x
+        dex
+        bpl @next
+        bmi @end
+@header:
+        .byte 0,0,0,0,"fail / total"
+@end:
         ; modules will write further tests to this segment
 
 .endif
