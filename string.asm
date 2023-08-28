@@ -4,12 +4,14 @@
     .include "word16.asm"
 
     .macro STRN s, pad
-        ; write s as <length byte>, s[, padding]
+        ; write s as <length word>, s[, padding]
         ; where padding aligns total length to multiple of pad
-        .byte .strlen(s)
+        .word .strlen(s)
         .byte s
     .ifnblank pad
-        .res ((-(.strlen(s) + 1) .mod pad) + pad) .mod pad
+    .if .strlen(s) .mod pad
+        .res pad - (.strlen(s) .mod pad)
+    .endif
     .endif
     .endmac
 
@@ -100,7 +102,7 @@ fmtint:
         lda #'-'        ; negative?
         sta FMTBUF
         inc IDX
-        NEGWW AW,AW
+        NEGWW AW, AW
 nosign:
         ldx #4
         lda TMP
@@ -310,38 +312,38 @@ test_string:
 
         lda strint0
         sta LEN
-        SETWC AW, strint0+1
+        SETWC AW, strint0+2
         jsr parseint
         lda ERR
         EXPECTAC 0, "parseint 0"
 
         lda strint1
         sta LEN
-        SETWC AW, strint1+1
+        SETWC AW, strint1+2
         jsr parseint
         EXPECTWC BW, 1234, "parseint 1"
 
         lda strint2
         sta LEN
-        SETWC AW, strint2+1
+        SETWC AW, strint2+2
         jsr parseint
         EXPECTWC BW, -456, "parseint 2"
 
         lda strint3
         sta LEN
-        SETWC AW, strint3+1
+        SETWC AW, strint3+2
         jsr parseint
         EXPECTWC BW, 42, "parseint 3"
 
         lda strint4
         sta LEN
-        SETWC AW, strint4+1
+        SETWC AW, strint4+2
         jsr parseint
         EXPECTWC BW, -492, "parseint 4"
 
         lda strint5
         sta LEN
-        SETWC AW, strint5+1
+        SETWC AW, strint5+2
         jsr parseint
         EXPECTWC BW, 48813, "parseint 5"
 

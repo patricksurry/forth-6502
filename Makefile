@@ -1,9 +1,11 @@
-all: clean forth-tests
+all: clean tests
 
-forth-test.bin: forth.asm word16.asm unittest.asm ld65.cfg sym2py65.py
+SOURCES = forth.asm bootstrap.f word16.asm string.asm ld65.cfg sym2py65.py
+
+forth-test.bin: $(SOURCES) unittest.asm
 	cl65 -g --verbose --target none --config ld65.cfg --asm-define TESTS -l forth-test.lst -m forth-test.map -Ln forth-test.sym -o forth-test.bin forth.asm
 
-forth.bin: forth.asm word16.asm unittest.asm ld65.cfg sym2py65.py
+forth.bin: $(SOURCES)
 	cl65 -g --verbose --target none --config ld65.cfg -l forth.lst -m forth.map -Ln forth.sym -o forth.bin forth.asm
 
 forth-test.mon: forth-test.bin
@@ -18,10 +20,10 @@ forth.mon: forth.bin
 	echo "width 72" >> forth.mon
 	echo "goto forth" >> forth.mon
 
-forth-tests: forth-test.bin forth-test.mon forth-test.sym
+tests: forth-test.bin forth-test.mon forth-test.sym
 	py65mon -m 65C02 -l forth-test.bin -b forth-test.mon -a `grep __MAIN_START__ forth-test.sym | cut -d' '  -f2`
 
-forth: clean forth.mon
+forth: forth.mon
 	py65mon -m 65C02 -l forth.bin -b forth.mon -a `grep __MAIN_START__ forth.sym | cut -d' '  -f2`
 
 clean:

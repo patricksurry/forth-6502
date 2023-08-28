@@ -20,13 +20,13 @@ __RETSTACK_START__ = __STACK_START__ - __STACK_SIZE__
         ADDWCW PC, 2, PC
     .endmac
 
-    .macro NEXT
-        jmp _NEXT
-    .endmac
-
-    .macro LSTRN s
-        .word LITSTRING
-        STRN s, 2
+    .macro MEMCOPY source, target, length
+    .local loop
+        ldx #(length-1)
+loop:   lda source, x
+        sta target, x
+        dex
+        bpl loop
     .endmac
 
 ; minimal character I/O which assumes we have magic getc/putc memory locations
@@ -35,27 +35,54 @@ WORDBUF = $100      ; $100 - 120
 parsebuf = $200     ; $200 -$3FF
 nparsebuf = $200
 
+    .zeropage
+
+NPUSH:  .res 1
+CFA:    .res 2
+IA:     .res 2
+UW:     .res 2
+VW:     .res 2
+
     .code
 
 DOCOL:
         ; interpreter for a Forth word, which has a codeword followed by a list of codeword addresses
-        ; AW contains the address of the codeword, so we just need to push the current PC
-        ; which tells us where we are after we're finished this word,
+        ; CFA contains the address of the codeword (via prev NEXT)
+        ; so push the current PC which is where to resume after finishing this word,
         ; and then continue executing words at AW+2
         PUSHW RP, PC
-        ADDWCW AW, 2, PC
+        ADDWCW CFA, 2, PC
         ; fall through to NEXT, and eventually matching EXIT pops the old PC
 _NEXT:
         ; indirect threading: PC has the address of the next codeword's address
         ; the codeword contains the address of adapter/interpreter used to execute the word
         ; we jump to the target codeword's code after incrementing PC
         ; leaving AW containing the address of the codeword
-        CPYIWW PC, AW       ; now AW contains the codeword's address
+        CPYIWW PC, CFA       ; now CFA contains the codeword's address (cf DOCOL)
         INCPC               ; codeword to execute after we finish this one
         ; we need to jump to the address stored at the address stored in AW
-        CPYIWW AW, BW       ; now BW has the interpreter address
+        CPYIWW CFA, IA       ; now IA has the interpreter address
 nextword:                   ; useful breakpoint to step through words
-        jmp (BW)            ; run the word's interpreter code
+        jmp (IA)            ; run the word's interpreter code
+
+
+POP_A = 2
+POP_AB = 4
+POP_ABC = 6
+POP_ABCD = 8
+
+PUSH_A = POP_A
+PUSH_AB = POP_AB
+PUSH_ABC = POP_ABC
+PUSH_ABCD = POP_ABCD
+
+    .macro NEXT pushreg
+    .ifnblank pushreg
+        ldx #pushreg
+        stx NPUSH
+    .endif
+        jmp _NEXT
+    .endmac
 
 forth:
         ; initial entry point
@@ -66,6 +93,44 @@ forth:
 
 cold_start:
         .word QUIT          ; start up interpreter
+
+syncstack:
+    .proc _syncstack
+        ; NPUSH has # of bytes to push; x has number of bytes to pop
+        txa
+        sec
+        sbc NPUSH
+        beq done
+        bpl morepop
+        eor #$ff    ; more push, e.g. push c,b,a; pop a
+        inc         ; so negate diff x - NPUSH => NPUSH - x
+        GROWA SP    ; grow stack by difference in bytes
+        ldy #0
+fillstack:          ; cp reg [x=NPOP, NPUSH) => stack [0, diff)
+        lda AW,x
+        sta (SP),y
+        inx
+        cpx NPUSH
+        beq done
+        iny
+        bra fillstack
+morepop:            ; e.g. push a;  pop a, b, c
+        pha         ; save difference for shrink
+        tay         ; and for countdown
+fillreg:            ; cp stack [0, diff) => reg [NPUSH, NPOP)
+        dey
+        bmi donefill
+        dex
+        lda (SP),y
+        sta AW,x
+        bra fillreg
+donefill:
+        pla
+        SHRINKA SP  ; shrink stack by difference
+done:   stz NPUSH
+        rts
+    .endproc
+
 
 .include "string.asm"
 
@@ -121,6 +186,12 @@ link .set 0         ; this counts word defs so we can generate linked list of sy
 
     .macro _DEFWORD name, label, flags
 
+    .ifnblank flags
+        .if flags & (~(F_IMMED|F_HIDDEN))
+            .error .sprintf ("_DEFWORD %s: invalid flags", name)
+        .endif
+    .endif
+
 ; symbol for linked list
 .ident (.sprintf("__link__%04d", link+1)):
 ; sybmol for debugging
@@ -151,12 +222,19 @@ link .set link + 1
     .endif
     .endmac
 
-    .macro DEFCODE name, label, flags
+
+    .macro DEFCODE name, label, flags, popreg
     .local code
         ; define a native word
         _DEFWORD name, label, flags
         .word code
 code:
+    .ifblank popreg
+        ldx #0
+    .else
+        ldx #popreg
+    .endif
+        jsr syncstack
         ; followed by native assembly, ended by NEXT
     .endmac
 
@@ -169,16 +247,16 @@ code:
     .macro DEFCONST name, label, flags, value
         ; define word that pushes constant to stack
         DEFCODE name, label, flags
-        PUSHC SP, value
-        NEXT
+        SETWC AW, value
+        NEXT PUSH_A
     .endmac
 
     .macro DEFVAR name, label, flags, value
     .local vptr
         ; define word that returns address of a variable
         DEFCODE name, label, flags
-        PUSHC SP, vptr
-        NEXT
+        SETWC AW, vptr
+        NEXT PUSH_A
 vptr:
     .ifnblank label
 .ident(.sprintf("%s_value", label)):
@@ -242,65 +320,62 @@ srcids:     .byte 0, $ff   ; user input, bootstrap
         ; EXECUTE :: xt --
         ; execute the execution token (codeword) on the stack, cf NEXT
         ; we don't increment PC since target word's NEXT will do it
-        DEFCODE "EXECUTE"
-        POPW SP, AW     ; AW contains the address of the codeword (required for DOCOL)
-        CPYIWW AW, BW   ; Indirect copy so BW contains the codeword itself
-        jmp (BW)        ; jump to the codeword (address of interpreter)
+        DEFCODE "EXECUTE", , , POP_A
+        CPYWW AW, CFA   ; CFA contains the address of the codeword (required for DOCOL)
+        CPYIWW CFA, IA  ; Indirect copy so IA contains the codeword itself
+        jmp (IA)        ; jump to the codeword (address of interpreter)
 
         ; DROP :: x --
-        DEFCODE "DROP"
-        SHRINK SP
+        DEFCODE "DROP", , , POP_A
         NEXT
 
         ; SWAP :: x y -- y x
-        DEFCODE "SWAP"
-        PEEK SP, 0, AW
-        DUPE SP, 1, 0
-        POKE SP, 1, AW
-        NEXT
+        DEFCODE "SWAP", , , POP_AB
+        CPYWW AW, UW
+        CPYWW BW, AW
+        CPYWW UW, BW
+        NEXT PUSH_AB
 
         ; DUP :: x -- x x
-        DEFCODE "DUP"
-        GROW SP
-        DUPE SP, 1, 0
-        NEXT
+        DEFCODE "DUP", , , POP_A
+        CPYWW AW, BW
+        NEXT PUSH_AB
 
         ; OVER :: x y -- x y x
-        DEFCODE "OVER"
-        GROW SP
-        DUPE SP, 2, 0
-        NEXT
+        DEFCODE "OVER", , , POP_AB
+        CPYWW BW, CW
+        CPYWW AW, BW
+        CPYWW CW, AW
+        NEXT PUSH_ABC
 
         ; ROT :: x y z -- y z x
-        DEFCODE "ROT"
-        PEEK SP, 2, AW
-        DUPE SP, 1, 2
-        DUPE SP, 0, 1
-        POKE SP, 0, AW
-        NEXT
+        DEFCODE "ROT", , , POP_ABC
+        CPYWW AW, UW
+        CPYWW CW, AW
+        CPYWW BW, CW
+        CPYWW UW, BW
+        NEXT PUSH_ABC
 
         ; -ROT :: x y z -- z x y
-        DEFCODE "-ROT", "NROT"
-        PEEK SP, 0, AW
-        DUPE SP, 1, 0
-        DUPE SP, 2, 1
-        POKE SP, 2, AW
-        NEXT
+        DEFCODE "-ROT", "NROT", , POP_ABC
+        CPYWW AW, UW
+        CPYWW BW, AW
+        CPYWW CW, BW
+        CPYWW UW, CW
+        NEXT PUSH_ABC
 
         ; 2DROP :: x y --
-        DEFCODE "2DROP", "_2DROP"
-        SHRINK SP, 2
+        DEFCODE "2DROP", "_2DROP", , POP_AB
         NEXT
 
         ; 2DUP :: x y -- x y x y
-        DEFCODE "2DUP", "_2DUP"
-        GROW SP, 2
-        DUPE SP, 3, 1
-        DUPE SP, 2, 0
-        NEXT
+        DEFCODE "2DUP", "_2DUP", , POP_AB
+        MEMCOPY AW, CW, 2*2
+        NEXT PUSH_ABCD
 
         ; 2SWAP :: x y z w -- z w x y
         DEFCODE "2SWAP", "_2SWAP"
+;TODO
         PEEK SP, 0, AW
         PEEK SP, 1, BW
         DUPE SP, 2, 0
@@ -310,217 +385,203 @@ srcids:     .byte 0, $ff   ; user input, bootstrap
         NEXT
 
         ; ?DUP :: x -- 0 | x x
-        DEFCODE "?DUP", "QDUP"
+        DEFCODE "?DUP", "QDUP", , POP_A
     .proc _qdup
-        EQUIWC SP, 0
+        EQUWC AW, 0
         beq done
-        GROW SP
-        DUPE SP, 1, 0
-done:
-        NEXT
+        PUSHW SP, AW
+done:   NEXT PUSH_A
     .endproc
 
 ; ---------------------------------------------------------------------
 ; comparisons
 
         ; = :: x y -- 0 | 1
-        DEFCODE "=", "EQU"
+        DEFCODE "=", "EQU", , POP_AB
     .proc _equ
-        POPW SP, AW
         ldx #0
-        EQUIWW SP, AW
-        bne result
+        EQUWW AW, BW
+        bne isnt
         inx
-result: txa
-        SETIWA SP
-        NEXT
+isnt:   txa
+        SETWA AW
+        NEXT PUSH_A
     .endproc
 
         ; <> :: x y -- 0 | 1
-        DEFCODE "<>", "NEQU"
+        DEFCODE "<>", "NEQU", , POP_AB
     .proc _nequ
-        POPW SP, AW
         ldx #0
-        EQUIWW SP, AW
-        beq result
+        EQUWW AW, BW
+        beq isnt
         inx
-result: txa
-        SETIWA SP
-        NEXT
+isnt:   txa
+        SETWA AW
+        NEXT PUSH_A
     .endproc
 
         ; < :: x y -- 0 | 1
-        DEFCODE "<", "LT"
+        DEFCODE "<", "LT", , POP_AB
     .proc _lt
-        POPW SP, AW             ; y
-        SUBIWWW SP, AW, AW      ; x < y <=> x - y < 0
+        SUBWWW BW, AW, AW       ; x < y <=> x - y < 0
         ldx #0
         SGNW AW
-        bpl result
+        bpl isnt
         inx
-result: txa
-        SETIWA SP
-        NEXT
+isnt:   txa
+        SETWA AW
+        NEXT PUSH_A
     .endproc
 
         ; > :: x y -- 0 | 1
-        DEFCODE ">", "GT"
+        DEFCODE ">", "GT", , POP_AB
     .proc _gt
-        POPW SP, AW             ; y
-        SUBWIWW AW, SP, AW      ; x > y <=> y - x < 0
+        SUBWWW AW, BW, AW       ; x > y <=> y - x < 0
         ldx #0
         SGNW AW
-        bpl result
+        bpl isnt
         inx
-result: txa
-        SETIWA SP
-        NEXT
+isnt:   txa
+        SETWA AW
+        NEXT PUSH_A
     .endproc
 
         ; <= :: x y -- 0 | 1
-        DEFCODE "<=", "LE"
+        DEFCODE "<=", "LE", , POP_AB
     .proc _le
-        POPW SP, AW             ; y
-        SUBWIWW AW, SP, AW      ; x <= y <=> y - x >= 0
+        SUBWWW AW, BW, AW       ; x <= y <=> y - x >= 0
         ldx #0
         SGNW AW
-        bmi result
+        bmi isnt
         inx
-result: txa
-        SETIWA SP
-        NEXT
+isnt:   txa
+        SETWA AW
+        NEXT PUSH_A
     .endproc
 
         ; >= :: x y -- 0 | 1
-        DEFCODE ">=", "GE"
+        DEFCODE ">=", "GE", , POP_AB
     .proc _ge
-        POPW SP, AW             ; y
-        SUBIWWW SP, AW, AW      ; x >= y <=> x - y >= 0
+        SUBWWW BW, AW, AW      ; x >= y <=> x - y >= 0
         ldx #0
         SGNW AW
-        bmi result
+        bmi isnt
         inx
-result: txa
-        SETIWA SP
-        NEXT
+isnt:   txa
+        SETWA AW
+        NEXT PUSH_A
     .endproc
 
         ; 0= :: x -- 0 | 1
-        DEFCODE "0=", "ZEQU"
+        DEFCODE "0=", "ZEQU", , POP_A
     .proc _zequ
         ldx #0
-        EQUIWC SP, 0
-        bne result
+        EQUWC AW, 0
+        bne isnt
         inx
-result: txa
-        SETIWA SP
-        NEXT
+isnt:   txa
+        SETWA AW
+        NEXT PUSH_A
     .endproc
 
         ; 0<> :: x -- 0 | 1
-        DEFCODE "0<>", "ZNEQU"
+        DEFCODE "0<>", "ZNEQU", , POP_A
     .proc _znequ
         ldx #0
-        EQUIWC SP, 0
-        beq result
+        EQUWC AW, 0
+        beq isnt
         inx
-result: txa
-        SETIWA SP
-        NEXT
+isnt:   txa
+        SETWA AW
+        NEXT PUSH_A
     .endproc
 
         ; 0< :: x -- 0 | 1
         ; this tests if x < 0, ie. x 0< is the same as x 0 <
-        DEFCODE "0<", "ZLT"
+        DEFCODE "0<", "ZLT", , POP_A
     .proc _zlt
         ldx #0
-        SGNIW SP
-        bpl result
+        SGNW AW
+        bpl isnt
         inx
-result: txa
-        SETIWA SP
-        NEXT
+isnt:   txa
+        SETWA AW
+        NEXT PUSH_A
     .endproc
 
         ; 0> :: x -- 0 | 1
-        DEFCODE "0>", "ZGT"
+        DEFCODE "0>", "ZGT", , POP_A
     .proc _zgt
         ldx #0
-        SGNIW SP
-        beq result
-        bmi result
+        SGNW AW
+        beq isnt
+        bmi isnt
         inx
-result: txa
-        SETIWA SP
-        NEXT
+isnt:   txa
+        SETWA AW
+        NEXT PUSH_A
     .endproc
 
         ; 0<= :: x -- 0 | 1
-        DEFCODE "0<=", "ZLE"
+        DEFCODE "0<=", "ZLE", , POP_A
     .proc _zle
-        ldx #0
-        SGNIW SP
-        bmi result
-        inx
-result: txa
-        SETIWA SP
-        NEXT
+        ldx #1
+        SGNW AW
+        bmi is
+        beq is
+        dex
+is:     txa
+        SETWA AW
+        NEXT PUSH_A
     .endproc
 
         ; 0>= :: x -- 0 | 1
-        DEFCODE "0>=", "ZGE"
+        DEFCODE "0>=", "ZGE", , POP_A
     .proc _zge
         ldx #0
-        SGNIW SP
-        bmi result
+        SGNW AW
+        bmi isnt
         inx
-result: txa
-        SETIWA SP
-        NEXT
+isnt:   txa
+        SETWA AW
+        NEXT PUSH_A
     .endproc
 
 ; ---------------------------------------------------------------------
 ; bitwise ops
 
-;TODO IW versions
-
         ; AND :: x y -- x & y
-        DEFCODE "AND", "_AND"
-        POPW SP, AW
-        ANDIWWIW SP, AW, SP
-        NEXT
+        DEFCODE "AND", "_AND", , POP_AB
+        ANDWWW AW, BW, AW
+        NEXT PUSH_A
 
         ; OR :: x y -- x | y
-        DEFCODE "OR"
-        POPW SP, AW
-        ORIWWIW SP, AW, SP
-        NEXT
+        DEFCODE "OR", , , POP_AB
+        ORWWW AW, BW, AW
+        NEXT PUSH_A
 
         ; XOR :: x y -- x ^ y
-        DEFCODE "XOR"
-        POPW SP, AW
-        XORIWWIW SP, AW, SP
-        NEXT
+        DEFCODE "XOR", , , POP_AB
+        XORWWW AW, BW, AW
+        NEXT PUSH_A
 
         ; INVERT :: x -- ~x
-        DEFCODE "INVERT"        ; bitwise complement
-        NOTIWIW SP, SP
-        NEXT
+        DEFCODE "INVERT", , , POP_A     ; bitwise complement
+        NOTWW AW, AW
+        NEXT PUSH_A
 
 ; ---------------------------------------------------------------------
 ; arithmetic
 
         ; + :: x y -- x+y
-        DEFCODE "+", "PLUS"
-        POPW SP, AW
-        ADDIWWIW SP, AW, SP
-        NEXT
+        DEFCODE "+", "PLUS", , POP_AB
+        ADDWWW BW, AW, AW
+        NEXT PUSH_A
 
         ; - :: x y -- x-y
-        DEFCODE "-", "MINUS"
-        POPW SP, AW
-        SUBIWWIW SP, AW, SP
-        NEXT
+        DEFCODE "-", "MINUS", , POP_AB
+        SUBWWW BW, AW, AW
+        NEXT PUSH_A
 
 ;TODO  this should prob be a signed multiply (xor sign flags and negate then reapply)
 ; set overflow if sign flag gets overwritten, carry if exceed 16bits
@@ -528,66 +589,62 @@ result: txa
 ; e.g. ($10000 - x) * ($10000 - y) mod $10000 => -x * -y
 
         ; * :: x y -- x*y
-        DEFCODE "*", "MULTIPLY"
-        POPW SP, AW
-        PEEK SP, 0, BW
-        MULWWW AW, BW, CW
-        POKE SP, 0, CW
-        NEXT
+        DEFCODE "*", "MULTIPLY", , POP_AB
+        MULWWW BW, AW, UW
+        CPYWW UW, AW
+        NEXT PUSH_A
 
         ; /MOD :: num den -- rem quo
-        DEFCODE "/MOD", "DIVMOD"
-        PEEK SP, 0, BW
-        PEEK SP, 1, AW
-;TODO DIVIW ....
-        DIVWWWW AW, BW, CW, DW ; CW is quotient
-        POKE SP, 0, CW
-        POKE SP, 1, DW
-        NEXT
+        DEFCODE "/MOD", "DIVMOD", , POP_AB
+        DIVWWWW BW, AW, UW, VW ; num denom -- quo rem
+        MEMCOPY UW, AW, 4
+        NEXT PUSH_AB
 
         ; 1+ :: num -- num
-        DEFCODE "1+", "INC1"
-        ADDIWCIW SP, 1, SP      ; note INC has no indirect addressing mode
-        NEXT
+        DEFCODE "1+", "INC1", , POP_A
+        INCW AW
+        NEXT PUSH_A
 
         ; 2+ :: num -- num
-        DEFCODE "2+", "INC2"
-        ADDIWCIW SP, 2, SP
-        NEXT
+        DEFCODE "2+", "INC2", , POP_A
+        ADDWCW AW, 2, AW
+        NEXT PUSH_A
 
         ; 1- :: num -- num
-        DEFCODE "1-", "DEC1"
-        SUBIWCIW SP, 1, SP
-        NEXT
+        DEFCODE "1-", "DEC1", , POP_A
+        DECW AW
+        NEXT PUSH_A
 
         ; 2+ :: num -- num
-        DEFCODE "2-", "DEC2"
-        SUBIWCIW SP, 2, SP
-        NEXT
+        DEFCODE "2-", "DEC2", , POP_A
+        SUBWCW AW, 2, AW
+        NEXT PUSH_A
 
         ; LIT :: -- x
         ; push the next word as a constant and skip it
         DEFCODE "LIT"
-        PUSHIW SP, PC   ; copy literal to stack
+        CPYIWW PC, AW   ; fetch the literal
         INCPC           ; and skip it
-        NEXT
+        NEXT PUSH_A
 
         ; LITSTRING :: -- sptr len
         ; push subsequent bytes to the stack as a length delim string
         ; padded to a word boundary
         DEFCODE "LITSTRING"
-        CPYWW PC, AW
-        INCW AW
-        PUSHW SP, AW
-        lda (PC)
-        sta LEN
-        PUSHB SP, LEN
-        clc
-        lda LEN
-        adc #2      ; add two bytes (length byte + padding) and
-        and #$fe    ; ... clear last bit to get number of full words
-        ADDWAW PC, PC   ; bump PC to word boundary past string
-        NEXT
+        ADDWCW PC, 2, BW    ; string data starts after length word
+        CPYIWW PC, AW       ; get string length word @ PC
+        ADDWCW AW, 3, TMP    ; skip data via strlen + 3  bytes (length word + 1 byte padding)
+        lda TMP
+        and #$fe            ; and clear last bit to get number of full words
+        sta TMP
+        ADDWWW PC, TMP, PC   ; bump PC to word boundary past string data
+        NEXT PUSH_AB
+
+        ; helper to generate compiled LITSTRING
+    .macro LSTRN s
+        .word LITSTRING
+        STRN s, 2
+    .endmac
 
 ; ---------------------------------------------------------------------
 ; STACK
@@ -595,25 +652,25 @@ result: txa
         ; DSP@ :: -- sp
         ; push the current stack pointer on the stack
         DEFCODE "DSP@", "DSPFETCH"
-        PUSHW SP, SP
-        NEXT
+        CPYWW SP, AW
+        NEXT PUSH_A
 
         ; DSP! :: sp --
         ; set the stack pointer from the top of the stack
-        DEFCODE "DSP!", "DSPSTORE"
-        POPW SP, SP
+        DEFCODE "DSP!", "DSPSTORE", , POP_A
+        CPYWW AW, SP
         NEXT
 
-        ; RSP@ ::  -R- sp
+        ; RSP@ ::  -- sp
         ; push the current return stack pointer on the stack
         DEFCODE "RSP@", "RSPFETCH"
-        PUSHW SP, RP
-        NEXT
+        CPYWW RP, AW
+        NEXT PUSH_A
 
-        ; RSP! :: sp -R-
+        ; RSP! :: sp --
         ; set the return stack pointer from the top of the return stack
-        DEFCODE "RSP!", "RSPSTORE"
-        POPW SP, RP
+        DEFCODE "RSP!", "RSPSTORE", , POP_A
+        CPYWW AW, RP
         NEXT
 
         ; RDROP :: x -R-
@@ -624,16 +681,13 @@ result: txa
 
         ; >R :: x --  ;  -R- x
         ; move top stack elt to return stack
-        DEFCODE ">R", "TORS"
-        POPW SP, AW
+        DEFCODE ">R", "TORS", , POP_A
         PUSHW RP, AW
         NEXT
 
         ; 2>R :: x y --  ;  -R- x y
         ; move top two stack elts to return stack preserving order
-        DEFCODE "2>R", "_2TORS"
-        POPW SP, AW
-        POPW SP, BW
+        DEFCODE "2>R", "_2TORS", , POP_AB
         PUSHW RP, BW
         PUSHW RP, AW
         NEXT
@@ -642,91 +696,74 @@ result: txa
         ; move top of return stack to stack
         DEFCODE "R>", "FROMRS"
         POPW RP, AW
-        PUSHW SP, AW
-        NEXT
+        NEXT PUSH_A
 
         ; 2R> :: -- x y ; x y -R-
         ; move top two elts of return stack to stack preserving order
         DEFCODE "2R>", "_2FROMRS"
         POPW RP, AW
         POPW RP, BW
-        PUSHW SP, BW
-        PUSHW SP, AW
-        NEXT
+        NEXT PUSH_AB
 
         ; R@ ::  -- x ;  x -R- x )
         ; copy top of return stack to data stack
         DEFCODE "R@", "DUPRS"
         PEEK RP, 0, AW
-        PUSHW SP, AW
-        NEXT
+        NEXT PUSH_A
 
         ; 2R@ ::  -- x y ;  x y -R- x y)
         ; copy top of return stack to data stack keeping order
         DEFCODE "2R@", "_2DUPRS"
         PEEK RP, 0, AW
         PEEK RP, 1, BW
-        PUSHW SP, BW
-        PUSHW SP, AW
-        NEXT
+        NEXT PUSH_AB
 
 ; ---------------------------------------------------------------------
 ; Memory
 
         ; STORE :: x adr --
         ; store x @ adr
-        DEFCODE "!", "STORE"
-        POPW SP, AW
-        POPW SP, BW
+        DEFCODE "!", "STORE", , POP_AB
         CPYWIW BW, AW
         NEXT
 
         ; FETCH :: adr -- x
-        DEFCODE "@", "FETCH"
-        POPW SP, AW
-        CPYIWW AW, BW
-        PUSHW SP, BW
-        NEXT
+        DEFCODE "@", "FETCH", , POP_A
+        CPYIWW AW, AW
+        NEXT PUSH_A
 
         ; ADDSTORE :: x adr --
         ; (adr) += x
-        DEFCODE "+!", "ADDSTORE"
-        POPW SP, AW
-        POPW SP, BW
+        DEFCODE "+!", "ADDSTORE", , POP_AB
         ADDIWWIW AW, BW, AW
         NEXT
 
         ; SUBSTORE :: x adr --
         ; (adr) -= x
-        DEFCODE "-!", "SUBSTORE"
-        POPW SP, AW
-        POPW SP, BW
+        DEFCODE "-!", "SUBSTORE", , POP_AB
         SUBIWWIW AW, BW, AW
         NEXT
 
         ; C! :: x adr --
         ; store x => adr
-        DEFCODE "C!", "STOREBYTE"
-        POPW SP, AW
-        POPB SP, TMP
-        lda TMP
+        DEFCODE "C!", "STOREBYTE", , POP_AB
+        lda BW
         sta (AW)
         NEXT
 
         ; C@ :: adr -- x
         ; fetch adr => x
-        DEFCODE "C@", "FETCHBYTE"
-        PEEK SP, 0, AW
+        DEFCODE "C@", "FETCHBYTE", , POP_A
         lda (AW)
-        sta AW
-        stz AW+1
-        POKE SP, 0, AW
-        NEXT
+        SETWA AW
+        NEXT PUSH_A
 
 ;TODO  C@C! (CCOPY), CMOVE
 
 ; ---------------------------------------------------------------------
 ; I/O
+
+;; TODO PUSH/POP notation
 
         ; KEY :: -- c
         DEFCODE "KEY"
@@ -739,9 +776,9 @@ key_:       ; must preserve y register
         phy
         EQUWW _IN_value, nsrcbuf_value
         bne getcbuf
-        SETWC AW, _refill-2  ; DOCOL is implied
-        jsr DOCOL
-        POPW SP, AW         ; ignore error for now
+        SETWC CFA, _refill-2  ; set CFA pointing to implied DOCOL
+        jsr DOCOL            ; execute as forth word
+        SHRINK SP            ; ignore any error for now
 getcbuf:
         ADDWWW _srcbuf_value, _IN_value, AW
         lda (AW)
@@ -828,19 +865,6 @@ store:
         PUSHB SP, LEN
         NEXT
 
-        ; NAME :: link -- sptr len
-        ; put the name of a word on the stack
-        DEFCODE ".NAME", "_NAME"
-        POPW SP, AW
-        ldy #2
-        lda (AW),y
-        and #F_LENMASK
-        sta LEN
-        ADDWCW AW, 3, AW
-        PUSHW SP, AW
-        PUSHB SP, LEN
-        NEXT
-
         ; FIND :: sptr len -- hfa | nul
         DEFCODE "FIND"
     .proc _find
@@ -870,7 +894,7 @@ done:
         NEXT
 nomatch:
         CPYIWW BW, BW       ; check prev word
-        jmp nextlink
+        bra nextlink
     .endproc
 
         ; >CFA :: link -- cptr
@@ -902,11 +926,10 @@ nomatch:
     .proc _thfa
         POPW SP, AW
         CPYWW LATEST_value, BW  ; latest (highest) HFA
-next:
-        SUBWWW AW, BW, CW   ; CW = AW - BW
+loop:   SUBWWW AW, BW, CW   ; CW = AW - BW
         bcs done            ; no borrow, so AW >= BW
         CPYIWW BW, BW       ; follow linked list to prev HFA
-        jmp next            ; eventually BW = 0 which will break the loop
+        bra loop            ; eventually BW = 0 which will break the loop
 done:
         PUSHW SP, BW        ; push match or 0
         NEXT
@@ -1085,8 +1108,7 @@ loop:   .word INTERPRET
         .word WORD      ; -- sptr len
         .word _2DUP     ; sptr len -- sptr len sptr len
         .word FIND      ; sptr len sptr len -- sptr len link | nul
-        .word DUP       ; copy link to test
-        .word ZBRANCH
+        .word DUP, ZBRANCH      ; copy and test link
         .word maybe_number - *
         .word NROT, _2DROP ; drop copy of word keeping link
         .word DUP, TCFA, SWAP, QIMMEDIATE   ; codeword 1=immed|0=compile
@@ -1097,19 +1119,20 @@ compile:
         .word COMMA, EXIT ; add word to compiled code
 maybe_number:
         .word DROP      ; drop the nul link
-        .word NUMBER    ; sptr len -- value err
+        .word _2DUP, NUMBER    ; sptr len -- sptr len value err
         .word ZBRANCH
         .word is_number - *
-        .word DROP      ; drop the ptr
-        LSTRN " ? parse error\n"
+        .word DROP, TELL      ; drop the value and show the unknown string
+        LSTRN " ?\n"
         .word TELL, EXIT
 is_number:
+        .word NROT, _2DROP   ; drop the extra sptr, len leaving -- value
         .word STATE, FETCH
         .word ZBRANCH
         .word lit_immed - *
         .word LIT, LIT, COMMA, COMMA     ; compile LIT, <value>
 lit_immed:
-        .word EXIT      ; just leave it on the stack
+        .word EXIT      ; just leave value on the stack
 error:
 
 ; ---------------------------------------------------------------------
@@ -1139,7 +1162,7 @@ bootstrap_end:
 
     ; call a DOCOL-style word ending with EXIT_RTS as an assembly subroutine
     .macro TESTPHRASE phrase
-        SETWC AW, phrase
+        SETWC CFA, phrase
         jsr DOCOL
     .endmac
 
@@ -1169,6 +1192,29 @@ phrase_thfa: .word DOCOL, LIT, SWAP, THFA, THFA, DUP, TCFA, DUP, THFA, LIT, $ff,
 test_forth:
         SETWC SP, __STACK_START__
         SETWC RP, __RETSTACK_START__
+
+        SETWC AW, 1
+        SETWC BW, 2
+        SETWC CW, 3
+
+        lda #6
+        sta NPUSH
+        ldx #2
+        jsr syncstack
+
+        EXPECTPOP 2, "push>pop"
+        EXPECTPOP 3, "push>pop2"
+
+        SETWC AW, 99
+        PUSHC SP, 7
+        PUSHC SP, 42            ; stack is ... 7 42
+        lda #2
+        sta NPUSH
+        ldx #4
+        jsr syncstack        ; push 2 pop 4 should set BW to 42
+        EXPECTWC AW, 99, "pop>push"
+        EXPECTWC BW, 42, "pop>push1"
+        EXPECTPOP 7, "pop>push2"
 
         TESTPHRASE phrase_ver
         EXPECTPOP __FORTH_VERSION__, "VERSION"

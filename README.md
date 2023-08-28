@@ -13,10 +13,6 @@ test suite: https://forth-standard.org/standard/testsuite
 
 
 
-For fancy console could implement simple escape system like https://github.com/patricksurry/eastern-front-1941/blob/main/src/antic/anticmodel.ts#L240
-or memory map a character display?
-
-
 Setup
     conda create -n forth python=3.9
     pip install -e ../py65/
@@ -63,3 +59,40 @@ https://atariwiki.org/wiki/Wiki.jsp?page=6502%20Coding%20Algorithms%20Macro%20Li
 https://www.masswerk.at/6502/6502_instruction_set.html
 https://www.nesdev.org/wiki/Synthetic_instructions
 https://www.nesdev.org/wiki/6502_assembly_optimisations
+
+
+
+Optimizing for speed
+---
+
+About 8s for startup in py65mon
+
+presumably quicker in C e.g. https://github.com/omarandlorraine/fake6502/
+
+Optimizing for size
+---
+
+
+/*
+        .if .blank(count) && .xmatch(stack, SP)
+            jsr SHRINK_SP
+        .else
+            ...
+        .endif
+
+SHRINK_SP:                  ; 5656 v 6168 (save 8%)
+        lda #2
+        ADDWAW SP, SP
+        rts
+*/
+
+/*
+_POPW_SP_AW:
+        POPW SP, AW
+        rts
+
+.macro POPW_SP_AW
+;        POPW SP, AW
+        jsr _POPW_SP_AAW    ; 5400 v 6168 (save 12%, 24bytes x 32 = 768)
+.endmac
+*/

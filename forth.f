@@ -67,7 +67,7 @@ FC_BUFPTR @ FC_RESULT @ TELL
 
 : dumpword
 	WORD FIND 					\ get word
-	CR DUP . DUP .NAME TELL CR  \ show hfa and name
+	CR DUP . DUP ID TELL CR  	\ show hfa and name
 	DUP nextword SWAP 			\ find next word ( nxthfa hfa -- )
 	SPACE >CFA DUP @ . CR		\ show codeword adr
 	2+
@@ -75,7 +75,7 @@ FC_BUFPTR @ FC_RESULT @ TELL
 	WHILE
 		DUP @					( nxt cfa )
 		SPACE DUP . >HFA
-		?DUP IF .NAME TELL THEN CR
+		?DUP IF ID TELL THEN CR
 		2+
 	REPEAT
 	2DROP CR

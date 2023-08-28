@@ -35,7 +35,7 @@ PC:     .res 2    ; program counter
 SP:     .res 2    ; data stack pointer
 RP:     .res 2    ; return stack pointer
 
-AW:     .res 2    ; some public registers
+AW:     .res 2    ; some public registers (not used internally)
 BW:     .res 2
 CW:     .res 2
 DW:     .res 2
@@ -884,6 +884,10 @@ skip:
 
 ; 6168 core bytes
 
+    .macro GROWA stack
+        SUBWAW stack, stack
+    .endmac
+
     .macro GROW stack, count
         ; GROW SP, {2} :: SP - 2*{2} => SP ## A
         .ifnblank count
@@ -891,7 +895,11 @@ skip:
         .else
             lda #2
         .endif
-        SUBWAW stack, stack
+        GROWA stack
+    .endmac
+
+    .macro SHRINKA stack
+        ADDWAW stack, stack
     .endmac
 
     .macro SHRINK stack, count
@@ -901,7 +909,7 @@ skip:
         .else
             lda #2
         .endif
-        ADDWAW stack, stack
+        SHRINKA stack
     .endmac
 
     .macro _PUSHW stack, source, mode

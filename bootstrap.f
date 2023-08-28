@@ -198,7 +198,7 @@ HERE @
 
 \ align to the next 2 byte boundary
 : ALIGNED	( addr -- addr )
-	1 + 1 INVERT AND	( (addr+3) & ~3 )
+	1 + 1 INVERT AND	( (addr+1) & ~1 )
 ;
 
 \ align the HERE pointer
@@ -222,11 +222,12 @@ HERE @
 			C,		( copy character )
 		REPEAT
 		DROP		( drop the double quote character at the end )
-		DUP		( get the saved address of the length word )
+		DUP			( get the saved address of the length word )
 		HERE @ SWAP -	( calculate the length )
-		2-			( subtract 2 (because we measured from the start of the length word) )
+		2-			( subtract 2 since we measured from the start of the length word )
+		DUP DUP ALIGNED SWAP -
+		HERE @ + HERE !  ( pad length to multiple of 2 bytes; but HERE could still be odd )
 		SWAP !		( and back-fill the length location )
-		ALIGN		( round up to next multiple of 4 bytes for the remaining code )
 	ELSE		( immediate mode )
 		HERE @		( get the start address of the temporary space )
 		BEGIN
@@ -240,6 +241,24 @@ HERE @
 		HERE @ -	( calculate the length )
 		HERE @		( push the start address )
 		SWAP 		( addr len )
+	THEN
+;
+
+: ." IMMEDIATE		( -- )
+	STATE @ IF	( compiling? )
+		[COMPILE] S"	( read the string, and compile LITSTRING, etc. )
+		' TELL ,	( compile the final TELL )
+	ELSE
+		( In immediate mode, just read characters and print them until we get
+		  to the ending double quote. )
+		BEGIN
+			KEY
+			DUP '"' = IF
+				DROP	( drop the double quote character )
+				EXIT	( return from this function )
+			THEN
+			EMIT
+		AGAIN
 	THEN
 ;
 
@@ -315,10 +334,29 @@ _MFCNTL 8 + CONSTANT FC_OFFSET  \ IO(4): 32-bit offset for seek/tell (read/write
 	2 /			( returns number of cells )
 ;
 
-S" version " TELL VERSION . CR
-R0 . S" top of return stack" TELL CR
-S0 . S" top of data stack" TELL CR
-DOCOL . S" core begins" TELL CR
-DUP DOCOL - . S" core bytes" TELL CR
-HERE @ SWAP - . S" bytes compiled ok" TELL CR
-UNUSED . S" unused 2-byte cells" TELL CR
+\ convert a header-field address to strn name of the word
+: ID		( link -- sptr len )
+	2+ DUP 1+ SWAP C@ F_LENMASK AND
+;
+
+\ show all the words in the dictionary
+: WORDS
+	0 LATEST @		( start at LATEST dictionary entry )
+	BEGIN
+		?DUP		( while link pointer is not null )
+	WHILE
+		\ TODO could flag or skip hidden words
+		DUP ID TELL SPACE
+		SWAP 1+ SWAP @		( inc count and follow link to prev word )
+	REPEAT
+	'(' EMIT . S" words)" TELL CR
+;
+
+." version " VERSION . CR
+R0 . ." top of return stack" CR
+S0 . ." top of data stack" CR
+DOCOL . ." core begins" CR
+' NOOP DOCOL - . ." bytes core" CR
+HERE @ SWAP - . ." bytes bootstrap" CR
+UNUSED . ." two byte cells unused" CR
+WORDS
