@@ -12,7 +12,7 @@ forth-test.mon: forth-test.bin
 	python sym2py65.py < forth-test.sym | sort | egrep -v 'MACRO_SYMBOL|__link__' > forth-test.mon
 	echo "width 72" >> forth-test.mon
 	echo "goto test_main" >> forth-test.mon
-	echo "m test_report/400 ascii" >> forth-test.mon
+	echo "m test_report/500 ascii" >> forth-test.mon
 	echo "m test_report/4" >> forth-test.mon
 
 forth.mon: forth.bin

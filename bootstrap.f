@@ -150,7 +150,7 @@ HERE @
 : / ( x y -- q ) /MOD SWAP DROP ;
 : MOD ( x y -- r ) /MOD DROP ;
 
-: DEPTH ( -- n ) S0 DSP@ - 2 / 2- ;
+: DEPTH ( -- n ) S0 DSP@ - 2 / 1- ;
 
 \ display current stack
 : .S		( -- )
@@ -158,7 +158,7 @@ HERE @
     DSP@
     S0 2-
 	BEGIN
-		2DUP <      ( loop while current is above DSP@)
+		2DUP <=     ( loop while current is above DSP@)
 	WHILE
 		DUP @ .	    ( print the stack element )
 		SPACE
@@ -297,7 +297,7 @@ _MFCNTL 8 + CONSTANT FC_OFFSET  \ IO(4): 32-bit offset for seek/tell (read/write
 : REFILL-FILENO ( fileno -- ior )
 	0 >IN !
 	parsebuf #parsebuf ROT READ-FILE  ( -- n ior )
-	SWAP #srcbuf !
+	SWAP #srcbuf !					\ actual size of buffer
 ;
 
 : (REFILL) ( -- success )

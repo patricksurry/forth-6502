@@ -196,7 +196,7 @@ SR_ZVN = SR_Z | SR_V | SR_N
     .ifnblank hi2f
         sta _F
     .endif
-    .if >(value)
+    .if >(value)        ; optimize for compare to 0
         cmp #>(value)
     .endif
         bne done
@@ -961,58 +961,6 @@ skip:
         SHRINK stack
     .endmac
 
-    .macro _PEEK stack, index, target, word
-        ; PEEK SP, i, AW :: (SP), i => AW ## Y
-        ldy #index*2
-        lda (stack),y
-        sta target
-    .if word
-        iny
-        lda (stack),y
-        sta target+1
-    .endif
-    .endmac
-    .macro PEEK stack, index, target
-        _PEEK stack, index, target, 1
-    .endmac
-    .macro PEEKB stack, index, target
-        _PEEK stack, index, target, 0
-    .endmac
-
-    .macro _POKE stack, index, source, word
-        ; POKE SP, i, AW :: AW => (SP), i ## Y
-        ldy #index*2
-        lda source
-        sta (stack),y
-        iny
-    .if word
-        lda source+1
-    .else           ; for POKEB we need to zero the high byte
-        lda #0
-    .endif
-        sta (stack),y
-    .endmac
-    .macro POKE stack, index, source
-        _POKE stack, index, source, 1
-    .endmac
-    .macro POKEB stack, index, source
-        _POKE stack, index, source, 0
-    .endmac
-
-    .macro DUPE stack, from_index, to_index
-        ; DUPE SP, i, j :: (SP), i => (SP), j ## A, X, Y
-        ldy #from_index*2+1
-        lda (stack),y
-        tax
-        dey
-        lda (stack),y
-
-        ldy #to_index*2
-        sta (stack),y
-        txa
-        iny
-        sta (stack),y
-    .endmac
 
     .ifdef TESTS
         .include "unittest.asm"
