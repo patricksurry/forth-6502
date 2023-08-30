@@ -29,9 +29,10 @@ FMTBUF: .res 32
     .code
 
 ; ---------------------------------------------------------------------
-; simple hash
+; a simple hash (currently unused; could improve FIND)
 
 hashxrl3:
+    .proc _hashxrl3
         ; compute a simple hash of up to 256 bytes
         ; set AW H/L to start address, Y as number of bytes; on return A contains hash
         ; hash is calculated by setting A = 0 and reducing A = (A ^ x) <o 3
@@ -54,11 +55,8 @@ hashxrl3:
         ;     return hash(map(ord, reversed(s)))
 
         lda #0
-@loop:
-        dey
-        bpl @chr    ; while y >= 0
-        rts
-@chr:
+loop:   dey
+        bmi done    ; while y >= 0
         eor (AW),y  ; xor acc with next char
         ; rotate acc left 3 bits (despite 6502's usual roll-thru-carry semantics)
         ; the letters a-h show the current MSB -> LSB bits in the acc, followed by the carry flag
@@ -69,7 +67,9 @@ hashxrl3:
         asl         ; defg hab0  c   (discard B and gets c -> carry)
         adc #0      ; defg habc  0   (another adc to set the LSB, and always leave 0 -> carry)
         ; (note for rotl4 we could instad repeat the adc #$80 / rol trick)
-        bcc @loop   ; unconditional since final carry is always 0
+        bcc loop   ; unconditional since final carry is always 0
+done:   rts
+    .endproc
 
 ; ---------------------------------------------------------------------
 ; parseint, fmtint

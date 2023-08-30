@@ -1,35 +1,16 @@
-WORDBUF - for parse
-PARSEBUF - for user and file input
 
-: source 'srcbuf ! #srcbuf @ ;
+42 VALUE FOO
+
+
 
 : evaluate ( addr n -- )
 	#srcbuf ! 'srcbuf ! 0 >IN !
 	'source-id @ 1+ dup 'source-id ! -1 swap C!
 ;
 
-: refill-fileno ( fileno -- ior )
-	0 >IN !
-	parsebuf #parsebuf rot read-file  ( -- n ior )
-	swap #srcbuf !
-;
 
-: refill ( -- flag )
-	begin
-		'source-id @ C@ dup dup
-		-1 =
-			if parsebuf 'srcbuf !  	\ evaluate? fail back to parsebuf, leave -1 as err
-			else refill-fileno 		\ else try fileno => err
-		then
-	( source-id err )
-	swap over and while 			\ err and not stdin?
-		'source-id @ 1- 'source-id !	\ switch to prev source
-	repeat
-	not
-;
+FIND - not case-sensitive?
 
-FIND - not case-sensitive
-KEY - could essentially readline to fill buffer and allow editing
 
 SOURCE -- addr n   - start and length of buffer
 SOURCE-ID -1 string (EVALUATE), 0 user, [+# fileno]
@@ -37,10 +18,8 @@ REFILL -- 0|1 - true if buffer was refilled, 0 if source-id is -1
 
 INCLUDE
 INCLUDED
->IN - variable with offset from start of buffer
 
 DEFER/DEFER@/DEFER!/IS
-
 
 ; : FIB 0 1 ROT 1 BEGIN 2DUP > WHILE 1+ 2SWAP DUP ROT + 2SWAP REPEAT 2DROP NIP ;
 

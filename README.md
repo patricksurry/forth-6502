@@ -96,3 +96,19 @@ _POPW_SP_AW:
         jsr _POPW_SP_AAW    ; 5400 v 6168 (save 12%, 24bytes x 32 = 768)
 .endmac
 */
+
+
+make forth
+
+2048 top of return stack
+4096 top of data stack
+4096 core begins
+3997 bytes core
+1923 bytes bootstrap
+
+
+6523 align + test
+24499 unused 16 bit words
+
+123 align + test
+27699 unused 16 bit words

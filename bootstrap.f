@@ -72,7 +72,8 @@ HERE @
 ;
 
 : I 2R@ DROP ;				\ top elt is our own return address
-\ TODO J, K
+
+\TODO support J, K for nested loops
 
 : LOOP IMMEDIATE
 	' 2R> , ' 1+ , 			\ ( I: -- limit start++ )
@@ -168,15 +169,6 @@ HERE @
     CR
 ;
 
-: CONSTANT
-	WORD		( get the name (the name follows CONSTANT) )
-	CREATE		( make the dictionary entry )
-	DOCOL ,		( append DOCOL (the codeword field of this word) )
-	' LIT ,		( append the codeword LIT )
-	,		    ( append the value on the top of the stack )
-	' EXIT ,	( append the codeword EXIT )
-;
-
 \ reserve n bytes of memory, n should be a multiple of 2 (cell size) at least after padding
 : ALLOT		( n -- addr )
 	HERE @ SWAP	( here n )
@@ -185,16 +177,6 @@ HERE @
 
 \ calculate size of n cells in bytes, e.g. 2 CELLS ALLOT
 : CELLS ( n -- n ) 2 * ;
-
-\ define a variable like  VARIABLE FOO
-: VARIABLE ( -- )
-	1 CELLS ALLOT	( allocate 1 cell of memory, push the pointer to this memory )
-	WORD CREATE	( make the dictionary entry (the name follows VARIABLE) )
-	DOCOL ,		( append DOCOL (the codeword field of this word) )
-	' LIT ,		( append the codeword LIT )
-	,		    ( append the pointer to the new memory )
-	' EXIT ,	( append the codeword EXIT )
-;
 
 \ align to the next 2 byte boundary
 : ALIGNED	( addr -- addr )
@@ -262,15 +244,27 @@ HERE @
 	THEN
 ;
 
+: VALUE! ( n adr -- ) (toggle-mutate) EXECUTE ! (toggle-mutate) ;
+
+: TO IMMEDIATE	( n -- )
+	WORD FIND >CFA
+	STATE @ IF	( compiling? )
+		' LIT , ,
+		' VALUE! ,
+	ELSE		( immediate mode )
+		VALUE!
+	THEN
+;
+
 \ file handling
 
-0xF0 CONSTANT _MFCNTL           \ base address for MFCTNL
-_MFCNTL 0 + CONSTANT FC_ACTION  \ I(1): request an action (write after setting other params)
-_MFCNTL 1 + CONSTANT FC_STATUS  \ O(1): action status
-_MFCNTL 2 + CONSTANT FC_BUFPTR  \ I(2): pointer to data buffer
-_MFCNTL 4 + CONSTANT FC_BUFSIZ  \ I(2): max size of data buffer
-_MFCNTL 6 + CONSTANT FC_RESULT  \ O(2): actual read/write size or open'd fileno
-_MFCNTL 8 + CONSTANT FC_OFFSET  \ IO(4): 32-bit offset for seek/tell (read/write)
+0xF0 CONSTANT _MFIO           \ base address for MFIO
+_MFIO 0 + CONSTANT FC_ACTION  \ I(1): request an action (write after setting other params)
+_MFIO 1 + CONSTANT FC_STATUS  \ O(1): action status
+_MFIO 2 + CONSTANT FC_BUFPTR  \ I(2): pointer to data buffer
+_MFIO 4 + CONSTANT FC_BUFSIZ  \ I(2): max size of data buffer
+_MFIO 6 + CONSTANT FC_RESULT  \ O(2): actual read/write size or open'd fileno
+_MFIO 8 + CONSTANT FC_OFFSET  \ IO(4): 32-bit offset for seek/tell (read/write)
 
 0x00 CONSTANT F_OPEN \ mode in low bits
 0x10 CONSTANT F_READ \ fileno in low bits
@@ -294,30 +288,39 @@ _MFCNTL 8 + CONSTANT FC_OFFSET  \ IO(4): 32-bit offset for seek/tell (read/write
     FC_RESULT @ FC_STATUS C@
 ;
 
+: (input-buffer) 0x200 0x200 ;		\ addr and length of fixed input buffer
+
+8 CELLS ALLOT CONSTANT (SOURCE-IDS) 		\ stack of pending source ids
+0 (SOURCE-IDS) !					\ user input is next up
+-1 TO SOURCE-ID						\ current input is from eval buffer (this file in memory)
+
+: (NEXT-SOURCE) ( -- )				\ shrink the list
+	(SOURCE-IDS) DUP @ TO SOURCE-ID
+	DUP 2+ SWAP 8 CELLS CMOVE
+;
+
 : REFILL-FILENO ( fileno -- ior )
-	0 >IN !
-	parsebuf #parsebuf ROT READ-FILE  ( -- n ior )
-	SWAP #srcbuf !					\ actual size of buffer
+	(input-buffer) ROT READ-FILE  	( -- n ior )
+	(input-buffer) DROP ROT SOURCE! \ set source to bufadr n leaving -- ior
 ;
 
 : (REFILL) ( -- success )
 	BEGIN
-		'srcid @ C@ DUP DUP			( -- srcid srcid srcid )
-		255 =						\ char -1 is 255
-		IF 							\ from evaluate?
-			parsebuf 'srcbuf !  	\ switch back to parsebuf, leave srcid = -1 as err
-		ELSE
-			REFILL-FILENO 			( srcid srcid -- srcid err )
-		THEN  						\ leaving ( -- srcid err )
-		SWAP OVER AND 				( -- err (srcid && err) )
-	WHILE 							\ error and not stdin?
-		'srcid @ 1- 'srcid !		\ switch to prev source
-		DROP
+		SOURCE-ID DUP -1 <>
+		IF							\ try refill if not reading from eval block
+			REFILL-FILENO
+		THEN  						\ refill err or -1 source-id
+		DUP 						\ save error flag
+		SOURCE-ID AND 				\ error and not stdin? (source 0 is the last resort)
+	WHILE
+		DROP (NEXT-SOURCE)			\ drop the error flag, try next
 	REPEAT
 	NOT								\ returns success = not error
 ;
 
 ' (REFILL) ' REFILL DEFER!			\ inject our REFILL before the bootstrap text runs out!
+
+\ ------------------------------------------------------
 
 : NEGATE ( x -- -x ) 0 SWAP - ;
 : NIP ( x y -- y ) SWAP DROP ;
@@ -329,9 +332,9 @@ _MFCNTL 8 + CONSTANT FC_OFFSET  \ IO(4): 32-bit offset for seek/tell (read/write
 : HEX ( -- ) 16 BASE ! ;
 
 : UNUSED	( -- n )
+	0x8000
 	HERE @		( get current position in data segment )
-	NEGATE		( subtract from $10000 )
-	2 /			( returns number of cells )
+	2 /	-		( calc mumber of words)
 ;
 
 \ convert a header-field address to strn name of the word
@@ -357,6 +360,19 @@ R0 . ." top of return stack" CR
 S0 . ." top of data stack" CR
 DOCOL . ." core begins" CR
 ' NOOP DOCOL - . ." bytes core" CR
+DUP ' NOOP - . ." align & test" CR
 HERE @ SWAP - . ." bytes bootstrap" CR
-UNUSED . ." two byte cells unused" CR
+UNUSED . ." unused 16 bit words" CR
 WORDS
+.S
+
+(
+	version 2
+	2048 top of return stack
+	4096 top of data stack
+	4096 core begins
+	4257 bytes core
+	119 align & test
+	2018 bytes bootstrap
+	24323 unused 16 bit words
+)

@@ -7,7 +7,7 @@
     .feature underline_in_numbers
     .feature string_escapes
 
-__FORTH_VERSION__ = 1
+__FORTH_VERSION__ = 2
 
     .import __STACK_START__
     .import __STACK_SIZE__
@@ -20,12 +20,12 @@ __RETSTACK_START__ = __STACK_START__ - __STACK_SIZE__
         ADDWCW PC, 2, PC
     .endmac
 
-    .macro MEMCOPY source, target, length
+    .macro MEMCOPY src, tgt, length
     .local loop
-        ldx #(length-1)
-loop:   lda source, x
-        sta target, x
-        dex
+        ldy #(length-1)
+loop:   lda src, y
+        sta tgt, y
+        dey
         bpl loop
     .endmac
 
@@ -37,19 +37,30 @@ REG_ABCD = 4
 
 pushreg .set REG_NONE
 
-; minimal character I/O which assumes we have magic getc/putc memory locations
+/*
+    Memory map looks something like this (mostly defined in ld65.cfg):
 
-WORDBUF = $100      ; $100 - 120
-parsebuf = $200     ; $200 -$3FF
-nparsebuf = $200
+       0 -  $ff    zeropage
+    $100 - $1ff    6502 stack
+    $200 - $400    input buffer (512 bytes), defined in bootstrap.f
+    $400 - $420    WORDBUF - 32 char buffer for "WORD"
+     ... - $7FF    return stack (RP), max 496 cells (~1K bytes)
+     ... - $FFF    data stack (SP), max 1024 cells (2K bytes)
+    $1000 - ...    code, (test), data
+    $C000 - ...    (optional unit test report)
+*/
+
+WORDBUF = $400
 
     .zeropage
 
-NPUSH:  .res 1
-CFA:    .res 2
-IA:     .res 2
-UW:     .res 2
+CFA:    .res 2      ; address of current word's codeword field
+NPUSH:  .res 1      ; number of register bytes pushed by native word (see syncstack)
+UW:     .res 2      ; tmp registers not mapped to stack head
 VW:     .res 2
+SRCBUF: .res 2      ; pointer to current source buffer
+SRCSZ:  .res 2      ; size of current source buffer
+SRCP:   .res 2      ; tmp pointer in source buffer (SRCBUF + >IN) used by KEY
 
     .code
 
@@ -66,12 +77,12 @@ _NEXT:
         ; the codeword contains the address of adapter/interpreter used to execute the word
         ; we jump to the target codeword's code after incrementing PC
         ; leaving AW containing the address of the codeword
-        CPYIWW PC, CFA       ; now CFA contains the codeword's address (cf DOCOL)
+        CPYIWW PC, CFA      ; now CFA contains the codeword's address (cf DOCOL)
         INCPC               ; codeword to execute after we finish this one
         ; we need to jump to the address stored at the address stored in AW
-        CPYIWW CFA, IA       ; now IA has the interpreter address
+        CPYIWW CFA, UW      ; copy interpeter address to zeropage in UW so we can indirect
 nextword:                   ; useful breakpoint to step through words
-        jmp (IA)            ; run the word's interpreter code
+        jmp (UW)            ; run the word's interpreter code
 
     .macro NEXT
         jmp .ident(.sprintf("next%d", ::pushreg))
@@ -80,10 +91,15 @@ nextword:                   ; useful breakpoint to step through words
 forth:
         ; initial entry point
         cld
-        SETWC SP, __STACK_START__
+        SETWC SP, __STACK_START__   ; return stack cleared in quit
         SETWC PC, cold_start
-        CPYWW _srcbuf_value, SRCBUFP    ; init our zp buf ptr for KEY
         NEXT
+
+cold_start:
+        .word LIT, bootstrap
+        .word LIT, bootstrap_end - bootstrap
+        .word SOURCESET
+        .word QUIT          ; start up interpreter
 
 POP_NONE = REG_NONE
 POP_A = REG_A
@@ -116,9 +132,6 @@ next4:  ldx #REG_ABCD * 2
         bra nextp
 nextp:  stx NPUSH
         bra _NEXT
-
-cold_start:
-        .word QUIT          ; start up interpreter
 
 syncstack0:
     ldx #REG_NONE
@@ -178,35 +191,40 @@ toreg:  dey         ; cp stack [0, diff) => reg [NPUSH, NPOP)
 shrnk:  pla
         SHRINKA SP  ; shrink stack by difference in bytes (not words)
 done:   stz NPUSH   ; default next op to no unpushed registers
-        rts
+        ADDWCW CFA, 2, CFA
+        jmp (CFA)
     .endproc
 
-    .macro SETAWNEXT mode
-        ; we store forth const and vars in the word following a JSR
-        ; ie. at the return address on the stack
-        pla
+; we store forth CONSTANT, VARIABLE and VALUE in the word following a JSR setaw(const|var|val)
+; which sets the carry bit to indicate whether to return the value (clc) or value pointer (sec)
+; normally a VALUE behaves like a constant but TO uses the hlper (toggle-mutate)
+; to temporarily swap the clc <-> sec in setawval so that we can set it like a variable
+setawval:
+        clc     ; self-modifying via (toggle-mutate)
+        bra setawpre
+setawconst:
+        clc
+        bra setawpre
+setawvar:
+        sec
+setawpre:
+    .proc _setawpre
+        pla             ; fetch the JSR return which is one byte before value
         sta UW
         pla
         sta UW+1
         INCW UW         ; JSR puts curr address + 2 (not 3) on the stack
-    .if mode = 0
+        bcs cpyadr
         CPYIWW UW, AW   ; for a constant we set the value
-    .else
-        CPYWW UW, AW    ; for a variable we set the address
-    .endif
-        INCW UW         ; INC twice so we return past the value
+        bra post
+cpyadr: CPYWW UW, AW    ; for a variable we set the address
+post:   INCW UW         ; INC twice so we return past the value
         lda UW+1
         pha
         lda UW
         pha
         rts
-    .endmac
-
-setawconst:
-        SETAWNEXT 0
-
-setawvar:
-        SETAWNEXT 1
+    .endproc
 
 .include "string.asm"
 
@@ -303,12 +321,10 @@ link .set link + 1
         ; define a native word
         _DEFWORD name, label, flags
 pushreg .set ::REG_NONE
-        .word code
-code:
     .ifblank popreg
-        jsr syncstack0
+        .word syncstack0
     .else
-        jsr .ident(.sprintf("syncstack%d", popreg))
+        .word .ident(.sprintf("syncstack%d", popreg))
     .endif
         ; followed by native assembly, ended by NEXT
     .endmac
@@ -324,8 +340,10 @@ code:
         DEFCODE name, label, flags
     .if mode = 0
         jsr setawconst
-    .else
+    .elseif mode = 1
         jsr setawvar
+    .else
+        jsr setawval
     .endif
     .ifnblank label
 .ident(.sprintf("%s_value", label)):
@@ -351,10 +369,15 @@ code:
         _DEFCV name, label, flags, value, 1
     .endmac
 
+    .macro DEFVALUE name, label, flags, value
+        ; define a mutatable constant
+        _DEFCV name, label, flags, value, 2
+    .endmac
+
     .code
 
 ; ---------------------------------------------------------------------
-; core constants
+; core constants exposing asm symbols
 
         DEFCONST "VERSION",,, __FORTH_VERSION__ ; current version of this forth
         DEFCONST "S0",,, __STACK_START__        ; top of param stack
@@ -370,22 +393,16 @@ code:
         DEFVAR "STATE"                          ; immediate = 0 / compile != 0
         DEFVAR "LATEST", , , NOOP_header        ; head of our linked word list
         DEFVAR "HERE", , , bootstrap            ; overwrite bootstrap text
-        DEFVAR "BASE", , , 10   ; radix for printing and reading numbers
+        DEFVAR "BASE", , , 10                   ; radix for printing and reading numbers
+        DEFVAR ">IN", "_IN", , 0                ; current position in SOURCE
 
-        DEFCONST "parsebuf", "_parsebuf", , parsebuf
-        DEFCONST "#parsebuf", "_nparsebuf", , nparsebuf
+        DEFVALUE "SOURCE-ID", "SOURCE_ID"
 
-srcids:     .byte 0, $ff   ; user input, bootstrap
-            .res 14
-
-        DEFVAR "'srcid", "_srcid", , srcids+1
-        DEFVAR "'srcbuf", "_srcbuf", , bootstrap
-        DEFVAR "#srcbuf", "nsrcbuf", , bootstrap_end - bootstrap
-        DEFVAR ">IN", "_IN", , 0
-
-    .zeropage
-
-SRCBUFP:    .res 2          ; current character in srcbuf, see coldstart, KEY
+_consttmpl = VERSION
+_vartmpl = STATE
+_valtmpl = SOURCE_ID
+_cvlen = S0_header - VERSION
+_cvoff = VERSION_value - VERSION
 
     .code
 
@@ -408,8 +425,8 @@ SRCBUFP:    .res 2          ; current character in srcbuf, see coldstart, KEY
         ; we don't increment PC since target word's NEXT will do it
         DEFCODE "EXECUTE", , , POP_A
         CPYWW AW, CFA   ; CFA contains the address of the codeword (required for DOCOL)
-        CPYIWW CFA, IA  ; Indirect copy so IA contains the codeword itself
-        jmp (IA)        ; jump to the codeword (address of interpreter)
+        CPYIWW CFA, UW  ; Copy interpreter address to zeropage so we can indirect
+        jmp (UW)        ; jump to the interpreter
 
         ; DROP :: x --
         DEFCODE "DROP", , , POP_A
@@ -461,7 +478,7 @@ SRCBUFP:    .res 2          ; current character in srcbuf, see coldstart, KEY
 
         ; 2DUP :: x y -- x y x y
         DEFCODE "2DUP", "_2DUP", , POP_AB
-        MEMCOPY AW, CW, 2*2
+        MEMCOPY AW, CW, 4
         PUSH_ABCD
         NEXT
 
@@ -502,11 +519,11 @@ isnt:   txa
         ; <> :: x y -- 0 | 1
         DEFCODE "<>", "NEQU", , POP_AB
     .proc _nequ
-        ldx #0
+        ldx #1
         EQUWW AW, BW
-        beq isnt
-        inx
-isnt:   txa
+        bne is
+        dex
+is:     txa
         SETWA AW
         PUSH_A
         NEXT
@@ -820,7 +837,7 @@ isnt:   txa
         ; 2R> :: -- x y ; x y -R-
         ; move top two elts of return stack to stack preserving order
         DEFCODE "2R>", "_2FROMRS"
-        MEMCOPY RP, AW, 4
+        MEMCOPY (RP), AW, 4
         SHRINK RP, 2
         PUSH_AB
         NEXT
@@ -828,14 +845,14 @@ isnt:   txa
         ; R@ ::  -- x ;  x -R- x )
         ; copy top of return stack to data stack
         DEFCODE "R@", "DUPRS"
-        MEMCOPY RP, AW, 2
+        CPYIWW RP, AW
         PUSH_A
         NEXT
 
         ; 2R@ ::  -- x y ;  x y -R- x y)
         ; copy top of return stack to data stack keeping order
         DEFCODE "2R@", "_2DUPRS"
-        MEMCOPY RP, AW, 4
+        MEMCOPY (RP), AW, 4
         PUSH_AB
         NEXT
 
@@ -881,7 +898,65 @@ isnt:   txa
         PUSH_A
         NEXT
 
-;TODO  C@C! (CCOPY), CMOVE
+        ; CMOVE :: src dst len --
+        ; copy len chars from src to dst, from bottom upwards
+        ; if src < dst and regions overlap, use CMOVE> instead
+        ; see http://www.6502.org/source/general/memory_move.html
+        DEFCODE "CMOVE", , , POP_ABC
+    .proc _cmovedn
+        ldy #0
+        ldx AW+1
+        beq rmdn
+pgdn:   lda (CW),y ; move a page at a time
+        sta (BW),y
+        iny
+        bne pgdn
+        inc CW+1
+        inc BW+1
+        dex
+        bne pgdn
+rmdn:   ldx AW
+        beq done
+rmloop: lda (CW),y ; move the remaining bytes
+        sta (BW),y
+        iny
+        dex
+        bne rmloop
+done:   NEXT
+    .endproc
+
+        ; CMOVE> :: src dst len --
+        ; copy len chars from src to dst
+        ; if src > dst and regions overlap, use CMOVE> instead
+        DEFCODE "CMOVE>", "CMOVEUP", , POP_ABC
+    .proc _cmoveup
+        ldx AW+1    ; the last byte must be moved first
+        clc         ; start at the final pages of src and dst
+        txa
+        adc CW+1
+        sta CW+1
+        clc
+        txa
+        adc BW+1
+        sta BW+1
+        inx          ; allows the use of BNE after the DEX below
+        ldy AW
+        beq nxtpg
+        dey          ; move bytes on the last page first
+        beq pgup
+rmup:   lda (CW),y
+        sta (BW),y
+        dey
+        bne rmup
+pgup:   lda (CW),y ; handle Y = 0 separately
+        sta (BW),y
+nxtpg:  dey
+        dec CW+1   ; move the next page (if any)
+        dec BW+1
+        dex
+        bne rmup
+        NEXT
+    .endproc
 
 ; ---------------------------------------------------------------------
 ; I/O
@@ -895,22 +970,22 @@ isnt:   txa
 
 key_:
     .proc _key
-        EQUWC nsrcbuf_value, 0
+        EQUWW SRCSZ, _IN_value
         bne nxtbuf
-        SETWC CFA, _refill-2    ; set CFA pointing to implied DOCOL
-        jsr DOCOL               ; execute as forth word
-        SHRINK SP               ;TODO ignore any error for now
-        CPYWW _srcbuf_value, SRCBUFP
-nxtbuf: INCW _IN_value
-        DECW nsrcbuf_value      ; stomps acc
-        lda (SRCBUFP)
-        INCW SRCBUFP
+        SETWC CFA, _refill-2    ; CFA points at implied DOCOL
+        jsr DOCOL               ; REFILL updates SOURCE (SRCBUF, SRCSZ) and IN>
+        SHRINK SP               ;TODO currently ignore sucess flag
+nxtbuf: ADDWWW SRCBUF, _IN_value, SRCP    ; form zeropage pointer to next char
+        INCW _IN_value          ; advance >IN
+        lda (SRCP)
         rts
-_refill:  .word REFILL, EXIT_RTS
+_refill:
+        .word REFILL, EXIT_RTS
     .endproc
 
-        ; DEFER'd definition of REFILL that we'll patch in bootstrap
-        ; -- success
+        ; REFILL :: -- success
+        ; DEFER'd definition of REFILL that we'll patch in bootstrap with (REFILL)
+        ; sets 'srcbuf and #srcbuf, IN>
         DEFWORD "REFILL"
         .word NOOP, EXIT
 
@@ -938,6 +1013,10 @@ done:   NEXT
         ; WORD :: -- sptr len
         ; read a word from input
         DEFCODE "WORD"
+        jsr _word           ; returns length in AW, ptr in BW
+        PUSH_AB
+        NEXT
+
     .proc _word
 skipws: jsr key_
         cmp #$5c    ; backslash
@@ -952,16 +1031,15 @@ nocomment:
         ldy #0
 store:  sta WORDBUF,y
         iny
-        phy
-        jsr key_    ; this can stomp lots of stuff during refill
+        phy         ; stash y since refill can stomp things
+        jsr key_
         ply
         cmp #$21
         bpl store
         tya
         SETWA AW
         SETWC BW, WORDBUF
-        PUSH_AB
-        NEXT
+        rts
     .endproc
 
         ; NUMBER :: sptr len -- value err
@@ -989,6 +1067,10 @@ store:  sta WORDBUF,y
 
         ; FIND :: sptr len -- hfa | nul
         DEFCODE "FIND", , , POP_AB
+        jsr _find
+        PUSH_A
+        NEXT
+
     .proc _find
         lda AW
         sta LEN             ; single byte length
@@ -1011,8 +1093,7 @@ loop:   lda (UW),y          ; strncmp
 differ: CPYIWW AW, AW       ; check prev word
         EQUWC AW, 0         ; AW is curr ptr in linked lst
         bne next
-done:   PUSH_A
-        NEXT
+done:   rts
     .endproc
 
         ; >CFA :: link -- cptr
@@ -1055,7 +1136,10 @@ done:
         ; CREATE :: sptr len --
         ; create the header for new word defintion, updates HERE, LATEST
         DEFCODE "CREATE", , , POP_AB
-    .proc _create
+        jsr _create
+        NEXT
+
+    .proc _create   ; length in AW, ptr in BW
         lda AW
         sta LEN
         ; stash the heap ptr in zp
@@ -1080,7 +1164,7 @@ copy:   cpy LEN                 ; write the name
 done:   tya                     ; Y is LEN after loop
         ADDWAW AW,AW
         CPYWW AW, HERE_value    ; update the heap pointer
-        NEXT
+        rts
     .endproc
 
         ; , :: ptr --
@@ -1133,7 +1217,7 @@ done:   tya                     ; Y is LEN after loop
         NEXT
 
         ; ?IMMEDIATE link :: 0 | 1
-        ; TODO this should get split into proper ?IMMEDIATE plus separate state check
+        ;TODO this should get split into proper ?IMMEDIATE plus separate state check
         ; return 1 if word has F_IMMED set or state is 0 (imm mode)
         DEFCODE "?IMMEDIATE", "QIMMEDIATE", , POP_A
     .proc _qimmediate
@@ -1247,7 +1331,69 @@ is_number:
         .word LIT, LIT, COMMA, COMMA     ; compile LIT, <value>
 lit_immed:
         .word EXIT      ; just leave value on the stack
-error:
+
+
+; ---------------------------------------------------------------------
+; native constant, variable and value
+
+        ; CONSTANT :: val --
+        ; define a constant using next word, set to val
+        DEFCODE "CONSTANT", , , POP_A
+        SETWC UW, _consttmpl    ; copy the template
+        jsr _cvtemplate
+        NEXT
+
+        ; VALUE :: val --
+        ; define a value (mutable constant) using next word, set to val
+        DEFCODE "VALUE", , , POP_A
+        SETWC UW, _valtmpl      ; copy the template
+        jsr _cvtemplate
+        NEXT
+
+        ; VARIABLE :: --
+        ; create a value using next word with default value of zero
+        DEFCODE "VARIABLE"
+        SETWC AW, 0             ; variables don't pull default from stack
+        SETWC UW, _vartmpl      ; copy the template
+        jsr _cvtemplate
+        NEXT
+
+    .proc _cvtemplate
+        CPYWW AW, VW    ; stash the value
+        jsr _word       ; AW has length, BW has buffer
+        jsr _create     ; write the header
+        CPYWW VW, AW    ; recover the value
+        CPYWW HERE_value, VW
+        ldy #_cvlen-1
+loop:   lda (UW),y
+        sta (VW),y
+        dey
+        bpl loop
+        ADDWCW VW, _cvoff, VW
+        CPYWIW AW, VW    ; inject the current value
+        ADDWCW HERE_value, _cvlen, HERE_value    ; advance HERE
+        rts
+    .endproc
+
+        DEFCODE "(toggle-mutate)", "_toggle_mutate"
+        lda setawval
+        eor #$20            ; toggles between $18 CLC and $38 SEC
+        sta setawval
+        NEXT
+
+        ; SOURCE :: -- addr n
+        DEFCODE "SOURCE"
+        CPYWW SRCSZ, AW
+        CPYWW SRCBUF, BW
+        PUSH_AB
+        NEXT
+
+        ; SOURCE! :: addr n --
+        DEFCODE "SOURCE!", "SOURCESET", , POP_AB
+        CPYWW AW, SRCSZ
+        CPYWW BW, SRCBUF
+        SETWC _IN_value, 0
+        NEXT
 
 ; ---------------------------------------------------------------------
 ; a dummy word that marks the end of our linked list of words
@@ -1303,6 +1449,10 @@ phrase_find:
 phrase_thfa: .word DOCOL, LIT, SWAP, THFA, THFA, DUP, TCFA, DUP, THFA, LIT, $ff, THFA, EXIT_RTS
 ; expect: SWAP_header, SWAP, SWAP_header, 0
 
+dummy_rts:
+        .word 0
+        rts
+
 test_forth:
         SETWC SP, __STACK_START__
         SETWC RP, __RETSTACK_START__
@@ -1311,9 +1461,11 @@ test_forth:
         SETWC BW, 2
         SETWC CW, 3
 
+
         lda #6
         sta NPUSH
         ldx #2
+        SETWC CFA, dummy_rts
         jsr syncstack
 
         EXPECTPOP 2, "push>pop"
@@ -1325,6 +1477,7 @@ test_forth:
         lda #2
         sta NPUSH
         ldx #4
+        SETWC CFA, dummy_rts
         jsr syncstack        ; push 2 pop 4 should set BW to 42
         EXPECTWC AW, 99, "pop>push"
         EXPECTWC BW, 42, "pop>push1"
