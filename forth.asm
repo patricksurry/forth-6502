@@ -56,6 +56,7 @@ WORDBUF = $400
 
 CFA:    .res 2      ; address of current word's codeword field
 NPUSH:  .res 1      ; number of register bytes pushed by native word (see syncstack)
+MUTFLG: .res 1      ; see VALUE and VALUE' - return address or value?
 UW:     .res 2      ; tmp registers not mapped to stack head
 VW:     .res 2
 SRCBUF: .res 2      ; pointer to current source buffer
@@ -68,7 +69,7 @@ DOCOL:
         ; interpreter for a Forth word, which has a codeword followed by a list of codeword addresses
         ; CFA contains the address of the codeword (via prev NEXT)
         ; so push the current PC which is where to resume after finishing this word,
-        ; and then continue executing words at AW+2
+        ; and then continue executing words at CFA+2
         PUSHW RP, PC
         ADDWCW CFA, 2, PC
         ; fall through to NEXT, and eventually matching EXIT pops the old PC
@@ -88,18 +89,6 @@ nextword:                   ; useful breakpoint to step through words
         jmp .ident(.sprintf("next%d", ::pushreg))
     .endmac
 
-forth:
-        ; initial entry point
-        cld
-        SETWC SP, __STACK_START__   ; return stack cleared in quit
-        SETWC PC, cold_start
-        NEXT
-
-cold_start:
-        .word LIT, bootstrap
-        .word LIT, bootstrap_end - bootstrap
-        .word SOURCESET
-        .word QUIT          ; start up interpreter
 
 POP_NONE = REG_NONE
 POP_A = REG_A
@@ -133,6 +122,39 @@ next4:  ldx #REG_ABCD * 2
 nextp:  stx NPUSH
         bra _NEXT
 
+
+
+forth:
+        ; initial entry point
+        cld
+        stz MUTFLG
+        SETWC SP, __STACK_START__   ; return stack cleared in quit
+        SETWC PC, cold_start
+        NEXT
+
+cold_start:
+        .word LIT, bootstrap
+        .word LIT, bootstrap_end - bootstrap
+        .word SOURCESET
+        .word QUIT          ; start up interpreter
+
+; helper to call forth words as subroutines
+; set tgtword to CFA of target word, then jsr callword
+tgtword:
+        .word NOOP              ; will contain the word to execute
+        .word * + 2             ; dummy native word pointing below
+
+        .word syncstack0        ; native word interpreter to finalize stack and continue below
+
+        POPW RP, PC             ; recover the PC
+        rts                     ; return
+
+callword:
+        PUSHW RP, PC            ; stash the current PC
+        SETWC PC, tgtword
+        NEXT                    ; execute words at wrapper
+
+
 syncstack0:
     ldx #REG_NONE
     bra syncstack
@@ -151,8 +173,8 @@ syncstack4:
 
 syncstack:
     .proc _syncstack
-        ; syncstack is called to setup for each DEFCODE word
-        ; these are the only words that directly manipulate the data stack
+        ; syncstack is used as an interpreter for native (DEFCODE) words
+        ; These are the only words that directly manipulate the data stack
         ; so we can maintain a mapping between the registers AW, BW, ... DW
         ; and the head of the stack (AW at the head, BW next etc)
         ; an operation declares it wants to push registers back to the stack
@@ -192,19 +214,20 @@ shrnk:  pla
         SHRINKA SP  ; shrink stack by difference in bytes (not words)
 done:   stz NPUSH   ; default next op to no unpushed registers
         ADDWCW CFA, 2, CFA
-        jmp (CFA)
+        jmp (CFA)   ; continue with native code
     .endproc
 
 ; we store forth CONSTANT, VARIABLE and VALUE in the word following a JSR setaw(const|var|val)
 ; which sets the carry bit to indicate whether to return the value (clc) or value pointer (sec)
 ; normally a VALUE behaves like a constant but TO uses the hlper (toggle-mutate)
 ; to temporarily swap the clc <-> sec in setawval so that we can set it like a variable
-setawval:
-        clc     ; self-modifying via (toggle-mutate)
-        bra setawpre
 setawconst:
         clc
         bra setawpre
+setawval:
+        lda MUTFLG          ; set by VALUE' and reset below
+        beq setawconst      ; normally value behaves like a constant
+        stz MUTFLG          ; reset so VALUE' makes word behave like a variable just once
 setawvar:
         sec
 setawpre:
@@ -307,7 +330,6 @@ link .set link + 1
         .byte .strlen(name)
     .endif
         .byte name
-;TODO could store strlen at end as well for backtracking?
 ; main entrypoint for word pointing at codeword
     .ifnblank label
 .ident (label):
@@ -415,11 +437,6 @@ _cvoff = VERSION_value - VERSION
         POPW RP, PC
         NEXT
 
-        ; exit a word we've called as an assembly subroutine
-        DEFCODE "EXIT_RTS"
-        POPW RP, PC
-        rts
-
         ; EXECUTE :: xt --
         ; execute the execution token (codeword) on the stack, cf NEXT
         ; we don't increment PC since target word's NEXT will do it
@@ -495,7 +512,7 @@ _cvoff = VERSION_value - VERSION
     .proc _qdup
         EQUWC AW, 0
         beq done
-        PUSHW SP, AW    ; push an extra copy
+        PUSHW SP, AW    ; conditionally push an extra copy
 done:   PUSH_A
         NEXT
     .endproc
@@ -708,10 +725,10 @@ isnt:   txa
         PUSH_A
         NEXT
 
-;TODO  this should prob be a signed multiply (xor sign flags and negate then reapply)
-; set overflow if sign flag gets overwritten, carry if exceed 16bits
-; but this works ok with small numbers since two complement behaves ok
-; e.g. ($10000 - x) * ($10000 - y) mod $10000 => -x * -y
+;TODO this should be a proper signed multiply where we xor sign bits, clear them,
+; then multiply unsigned values and set overflow if sign bit is set, carry if exceed 16bits
+; and apply sign bit.   This simple implementation works OK with small signed numbers
+; since twos complement behaves e.g. ($10000 - x) * ($10000 - y) mod $10000 == -x * -y
 
         ; * :: x y -- x*y
         DEFCODE "*", "MULTIPLY", , POP_AB
@@ -972,15 +989,13 @@ key_:
     .proc _key
         EQUWW SRCSZ, _IN_value
         bne nxtbuf
-        SETWC CFA, _refill-2    ; CFA points at implied DOCOL
-        jsr DOCOL               ; REFILL updates SOURCE (SRCBUF, SRCSZ) and IN>
-        SHRINK SP               ;TODO currently ignore sucess flag
+        SETWC tgtword, REFILL
+        jsr callword            ; REFILL updates SOURCE (SRCBUF, SRCSZ) and IN>
+        SHRINK SP               ;TODO we currently ignore the status flag (0 == success)
 nxtbuf: ADDWWW SRCBUF, _IN_value, SRCP    ; form zeropage pointer to next char
         INCW _IN_value          ; advance >IN
         lda (SRCP)
         rts
-_refill:
-        .word REFILL, EXIT_RTS
     .endproc
 
         ; REFILL :: -- success
@@ -1117,10 +1132,10 @@ done:   rts
 
         ; >HFA :: adr -- link | 0
         DEFCODE ">HFA", "THFA", , POP_A
-        ; find the first word whose header field is at or before adr
-; TODO must be within 32+2+1+2 assuming adr is a cfa or dfa
-        ; the second call is a no-op: someadr >HFA >HFA
-        ; this is also a no-op: link >CFA >HFA
+        ; find header field for first word at or before adr
+        ; this means that the second call here is a no-op: someadr >HFA >HFA
+        ; as is the call here: link >CFA >HFA
+; TODO should check result is within 32+2+1+2, i.e. assuming adr is a cfa or dfa
     .proc _thfa
         CPYWW LATEST_value, UW  ; latest (highest) HFA
 loop:   SUBWWW AW, UW, VW   ; VW = AW - UW
@@ -1251,17 +1266,16 @@ immset: sty AW
 
         ; ' :: -- adr
         ; in compile mode, append next word to stack and skip it
-;TODO write commment => for compile-only identical to LIT ? in jonesforth it's just push v pushl
-;        DEFCODE "'", "TICK"
-;        PUSHIW SP, PC   ; copy next word to stack
-;        INCPC           ; and skip it
-;        NEXT
+        ; in jonesforth.S, this is equivalent to LIT (push(l) and skip the next word)
+        ; but that means it only works in compile mode: it essentially just
+        ; leaves itself as LIT which when later executed will push the next word
+        ; Here we've rewritten so that it also works in immediate mode
         DEFWORD "'", "TICK", F_IMMED
     .proc _tick
         .word STATE, FETCH, ZBRANCH
         .word immed - *
         .word LIT, LIT, COMMA, EXIT
-immed:  .word WORD, FIND, TCFA, EXIT
+immed:  .word WORD, FIND, TCFA, EXIT        ;todo cf VALUE' ?
     .endproc
 
         ; BRANCH :: --
@@ -1350,6 +1364,13 @@ lit_immed:
         jsr _cvtemplate
         NEXT
 
+        ; VALUE' :: --
+        ; make the next reference to a value behave like variable rather than constant
+        DEFCODE "VALUE'", "VALUE_"
+        lda #1
+        sta MUTFLG
+        NEXT
+
         ; VARIABLE :: --
         ; create a value using next word with default value of zero
         DEFCODE "VARIABLE"
@@ -1374,12 +1395,6 @@ loop:   lda (UW),y
         ADDWCW HERE_value, _cvlen, HERE_value    ; advance HERE
         rts
     .endproc
-
-        DEFCODE "(toggle-mutate)", "_toggle_mutate"
-        lda setawval
-        eor #$20            ; toggles between $18 CLC and $38 SEC
-        sta setawval
-        NEXT
 
         ; SOURCE :: -- addr n
         DEFCODE "SOURCE"
@@ -1420,33 +1435,31 @@ bootstrap_end:
         EXPECTWC AW, expected, label
     .endmac
 
-    ; call a DOCOL-style word ending with EXIT_RTS as an assembly subroutine
-    .macro TESTPHRASE phrase
-        SETWC CFA, phrase
-        jsr DOCOL
+    .macro TESTWORD word
+        SETWC tgtword, word
+        jsr callword
     .endmac
 
     .segment "TEST"
         jmp test_forth
 
-phrase_ver:   .word DOCOL, VERSION, EXIT_RTS
-phrase_ge:    .word DOCOL, LIT, 3, LIT, 2, GE, EXIT_RTS
-phrase_zge0:  .word DOCOL, LIT, 0, ZGE, EXIT_RTS
-phrase_zge1:  .word DOCOL, LIT, 1, ZGE, EXIT_RTS
-phrase_zge_1: .word DOCOL, LIT, $10000 - 1, ZGE, EXIT_RTS
-phrase_numberok:
+test_ge:        .word DOCOL, LIT, 3, LIT, 2, GE, EXIT
+test_zge0:      .word DOCOL, LIT, 0, ZGE, EXIT
+test_zge1:      .word DOCOL, LIT, 1, ZGE, EXIT
+test_zge_1:     .word DOCOL, LIT, $10000 - 1, ZGE, EXIT
+test_numberok:
         .word DOCOL
         LSTRN "48813"  ; adds LITSTRING, leading length and pad to stack word width
-        .word NUMBER, EXIT_RTS
-phrase_numberbad:
+        .word NUMBER, EXIT
+test_numberbad:
         .word DOCOL
         LSTRN "banana"
-        .word  NUMBER, EXIT_RTS
-phrase_find:
+        .word NUMBER, EXIT
+test_find:
         .word DOCOL
         LSTRN "-ROT"
-        .word FIND, EXIT_RTS
-phrase_thfa: .word DOCOL, LIT, SWAP, THFA, THFA, DUP, TCFA, DUP, THFA, LIT, $ff, THFA, EXIT_RTS
+        .word FIND, EXIT
+test_thfa: .word DOCOL, LIT, SWAP, THFA, THFA, DUP, TCFA, DUP, THFA, LIT, $ff, THFA, EXIT
 ; expect: SWAP_header, SWAP, SWAP_header, 0
 
 dummy_rts:
@@ -1460,7 +1473,6 @@ test_forth:
         SETWC AW, 1
         SETWC BW, 2
         SETWC CW, 3
-
 
         lda #6
         sta NPUSH
@@ -1485,33 +1497,33 @@ test_forth:
 
         EXPECTWC SP, __STACK_START__, "stk safe 1"
 
-        TESTPHRASE phrase_ver
+        TESTWORD VERSION
         EXPECTPOP __FORTH_VERSION__, "VERSION"
 
-        TESTPHRASE phrase_ge
+        TESTWORD test_ge
         EXPECTPOP 1, "3 >= 2"
 
-        TESTPHRASE phrase_zge0
+        TESTWORD test_zge0
         EXPECTPOP 1, "0 0>="
 
-        TESTPHRASE phrase_zge1
+        TESTWORD test_zge1
         EXPECTPOP 1, "1 0>="
 
-        TESTPHRASE phrase_zge_1
+        TESTWORD test_zge_1
         EXPECTPOP 0, "-1 0>="
 
-        TESTPHRASE phrase_numberok
+        TESTWORD test_numberok
         EXPECTPOP 0, "NUMBER ok flg"
         EXPECTPOP 48813, "NUMBER ok val"
 
-        TESTPHRASE phrase_numberbad
+        TESTWORD test_numberbad
         EXPECTPOP 6, "NUMBER bad flg"
         EXPECTPOP 0, "NUMBER bad val"
 
-        TESTPHRASE phrase_find
+        TESTWORD test_find
         EXPECTPOP NROT_header, "FIND -ROT"
 
-        TESTPHRASE phrase_thfa
+        TESTWORD test_thfa
         EXPECTPOP 0, "0 >HFA"
         EXPECTPOP SWAP_header, ">CFA >HFA"
         EXPECTPOP SWAP, ">HFA >CFA"

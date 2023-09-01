@@ -1,6 +1,54 @@
-TODO
+Down a deep rabbithole via
+https://ratfactor.com/forth/the_programming_language_that_writes_itself.html
 
-- signed multiply
+Mostly this is a port of JonesForth (https://github.com/nornagon/jonesforth/blob/master/jonesforth.S)
+which implements a small 16-bit Forth for the 65c02.
+This is only a toy, if you want a real Forth for 65c02 try https://github.com/SamCoVT/TaliForth2
+
+There are a couple of novelties as I learned and explored:
+
+- lazy push/pop via zero page registers; reduces size significantly, likely helps with performance in some cases, also isolates almost all stack interaction in one subroutine which makes it relatively easy to add stack under/overflow checking if desired
+
+- compact constant/value/variable words rather than separate native and forth implementations like Jonesforth
+
+- integrated to mfio in py65 monitor to get readline and external file IO; could optionally swap back to the magic single-byte read byte if desired
+
+
+
+TODO:
+clean up mfio plugin as separate py65 PR
+
+Debugging:
+
+look at SP, PC, HERE, LATEST
+look at SRCBUF, SRCP to see what was being read last
+
+tricky: stack underflow - syncstack could check for many cases in test mode?
+non-matching immediate conditionas, e.g. missing IF for THEN
+
+
+Interesting links:
+
+
+ben eater breadboard 6502 https://eater.net/6502
+
+interesting open-hw 65c02 comptuer    https://planck6502.com/
+
+thinking forth https://www.forth.com/wp-content/uploads/2018/11/thinking-forth-color.pdf
+
+naming conventions: https://github.com/ForthHub/discussion/issues/73
+
+forth core: https://forth-standard.org/standard/core
+
+fake 65c02 https://github.com/omarandlorraine/fake6502/
+
+TODO
+---
+
+run on C simulator - how fast?
+track heatmap of code via memory accesses
+could even watch for write to read-only memory tho self-modifying code and data/code intermingling makes it hard
+
 
 https://eater.net/6502
 https://www.reddit.com/r/beneater/comments/15k19xp/be6502_in_an_altoid_tin/
@@ -10,7 +58,6 @@ http://rubbermallet.org/fake6502.c
 signed v unsigned comparisons http://6502.org/tutorials/compare_beyond.html
 
 test suite: https://forth-standard.org/standard/testsuite
-
 
 
 Setup

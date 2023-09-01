@@ -244,15 +244,16 @@ HERE @
 	THEN
 ;
 
-: VALUE! ( n adr -- ) (toggle-mutate) EXECUTE ! (toggle-mutate) ;
+: VALUE! ( n xt -- ) VALUE' EXECUTE ! ;
 
+\ in immediate mode the phrase: n TO v is equivalent to: n VALUE' v !
 : TO IMMEDIATE	( n -- )
 	WORD FIND >CFA
-	STATE @ IF	( compiling? )
-		' LIT , ,
-		' VALUE! ,
-	ELSE		( immediate mode )
-		VALUE!
+	STATE @ IF		\ compiling?
+		' LIT , ,		\ compile LIT and xt from stack
+		' VALUE! ,		\ update its value
+	ELSE
+		VALUE!			\ just do it
 	THEN
 ;
 
@@ -283,10 +284,33 @@ _MFIO 8 + CONSTANT FC_OFFSET  \ IO(4): 32-bit offset for seek/tell (read/write)
 \ optionally specify r/w; see python open for r+ vs w+
 0b00000100 CONSTANT O_UPDATE
 
+: OPEN-FILE ( sptr len mode -- fileno status )
+    -ROT FC_BUFSIZ ! FC_BUFPTR ! F_OPEN OR FC_ACTION C!
+    FC_RESULT @ FC_STATUS C@
+;
+
 : READ-FILE ( bufptr bufsiz fileno -- rwsiz status )
     -ROT FC_BUFSIZ ! FC_BUFPTR ! F_READ OR FC_ACTION C!
     FC_RESULT @ FC_STATUS C@
 ;
+
+: WRITE-FILE ( bufptr bufsiz fileno -- status )
+    -ROT FC_BUFSIZ ! FC_BUFPTR ! F_WRITE OR FC_ACTION C!
+    FC_STATUS C@
+;
+
+: CLOSE-FILE ( fileno -- status )
+    F_CLOSE OR FC_ACTION C!
+    FC_STATUS C@
+;
+
+(
+	\ TODO
+
+	FILE-POSITION ( fileno -- lo hi status )
+	REPOSITION-FILE ( lo hi fileno -- status )
+	DELETE-FILE ( addr n -- ior )
+)
 
 : (input-buffer) 0x200 0x200 ;		\ addr and length of fixed input buffer
 
@@ -318,7 +342,7 @@ _MFIO 8 + CONSTANT FC_OFFSET  \ IO(4): 32-bit offset for seek/tell (read/write)
 	NOT								\ returns success = not error
 ;
 
-' (REFILL) ' REFILL DEFER!			\ inject our REFILL before the bootstrap text runs out!
+' (REFILL) ' REFILL DEFER!			\ inject our REFILL before this bootstrap text runs out!
 
 \ ------------------------------------------------------
 
@@ -364,7 +388,15 @@ DUP ' NOOP - . ." align & test" CR
 HERE @ SWAP - . ." bytes bootstrap" CR
 UNUSED . ." unused 16 bit words" CR
 WORDS
-.S
+
+\ test IO by dumping compiled words
+S" dump.bin" O_WTRUNC OPEN-FILE DROP 		\ drop ior
+DUP S0 HERE @ OVER - ROT WRITE-FILE DROP	\ drop ior
+CLOSE-FILE DROP
+
+." stack " .S
+
+." ready" CR
 
 (
 	version 2
