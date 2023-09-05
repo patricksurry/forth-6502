@@ -13,7 +13,6 @@
 ;   [INC|DEC]W, DECW - increment or decrement a .word (no indirect form)
 ;   [ADD|SUB][W|IW][C|W|IW][W|IW] - add or subtract two .words to form a third
 ;   PUSH[C|W|IW], POP[W|IW] - push or pop from a stack
-;   PEEK, POKE - modify stack without changing pointer
 ;   SHRINK, GROW - adjust stack pointer
 ;
 ; for standalone unit tests, assemble like

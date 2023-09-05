@@ -1,6 +1,6 @@
+\ scratch
 
 42 VALUE FOO
-
 
 FIND - could make it not case-sensitive?
 
@@ -36,8 +36,6 @@ DEFER/DEFER@/DEFER!/IS
         REPEAT
         2DROP NIP
 ;
-
-: RANGE 0 ?DO I LOOP ;
 
 : FIB 0 1 ROT 0 ?DO OVER + SWAP LOOP DROP ;
 

@@ -13,6 +13,7 @@ There are a couple of novelties as I learned and explored:
 
 - integrated to mfio in py65 monitor to get readline and external file IO; could optionally swap back to the magic single-byte read byte if desired
 
+- word16 macros are reasonably efficient, don't deal with large signed arith perfectly, cf sweet16
 
 
 TODO:
@@ -29,10 +30,9 @@ non-matching immediate conditionas, e.g. missing IF for THEN
 
 Interesting links:
 
-
 ben eater breadboard 6502 https://eater.net/6502
 
-interesting open-hw 65c02 comptuer    https://planck6502.com/
+interesting open-hw 65c02 computer    https://planck6502.com/
 
 thinking forth https://www.forth.com/wp-content/uploads/2018/11/thinking-forth-color.pdf
 
@@ -159,3 +159,15 @@ make forth
 
 123 align + test
 27699 unused 16 bit words
+
+
+
+look for repeated assembly lines (excl comments)
+
+sed -E -e 's/[ \t]*;.*//' -e 's/^[a-z_0-9]+://' -e 's/^[ \t]+//' forth.asm | sort | uniq -c | sort -rn | head -20
+
+look for largest words (ex: write in forth)
+
+
+94638 - thru tests; go forth: 13981611 - to ready; approx 12.5s
+13.8 million cycles in 12.5s  ~ 1.1MHz

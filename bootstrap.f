@@ -14,15 +14,9 @@ HERE @
 \ -- c  where c is the first character of the following word
 : CHAR WORD DROP C@ ;
 
-: ':' [ CHAR : ] LITERAL ;
-: ';' [ CHAR ; ] LITERAL ;
 : '(' [ CHAR ( ] LITERAL ;
 : ')' [ CHAR ) ] LITERAL ;
 : '"' [ CHAR " ] LITERAL ;
-: 'A' [ CHAR A ] LITERAL ;
-: '0' [ CHAR 0 ] LITERAL ;
-: '-' [ CHAR - ] LITERAL ;
-: '.' [ CHAR . ] LITERAL ;
 
 : CR '\n' EMIT ;
 : SPACE BL EMIT ;
@@ -36,7 +30,7 @@ HERE @
 	WORD		\ get the next word
 	FIND		\ find it in the dictionary
 	>CFA		\ get its codeword
-	,		\ and compile that
+	,			\ and compile that
 ;
 
 \ Control structures from jones.f for use in compiled words.
@@ -71,9 +65,8 @@ HERE @
 	' 2>R ,   				\ ( C: -- repeatadr donebr )  ( I: -R- limit start )
 ;
 
-: I 2R@ DROP ;				\ top elt is our own return address
-
-\TODO support J, K for nested loops
+: I 2R@ DROP ;				\ current loop index; nb. top of RS is own return address
+\TODO also support J, K for nested loops
 
 : LOOP IMMEDIATE
 	' 2R> , ' 1+ , 			\ ( I: -- limit start++ )
@@ -82,6 +75,8 @@ HERE @
 	HERE @ OVER - SWAP !	\ write [doneadr - donebr] => donebr
 	' 2DROP ,
 ;
+
+: RANGE 0 ?DO I LOOP ;
 
 \ BEGIN loop-part condition UNTIL
 \	-- compiles to: --> loop-part condition 0BRANCH OFFSET
@@ -145,7 +140,7 @@ HERE @
 			THEN
 		THEN
 	DUP 0= UNTIL		\ continue until we reach matching close paren, depth 0
-	DROP		\ drop the depth counter
+	DROP		\ drop m SP/the depth counter
 ;
 
 : / ( x y -- q ) /MOD SWAP DROP ;
@@ -346,14 +341,51 @@ _MFIO 8 + CONSTANT FC_OFFSET  \ IO(4): 32-bit offset for seek/tell (read/write)
 
 \ ------------------------------------------------------
 
-: NEGATE ( x -- -x ) 0 SWAP - ;
-: NIP ( x y -- y ) SWAP DROP ;
-
 : TRUE  1 ;
 : FALSE 0 ;
 
+: NEGATE ( x -- -x ) 0 SWAP - ;
+: NIP ( x y -- y ) SWAP DROP ;
+: TUCK ( x y -- y x y ) SWAP OVER ;
+: PICK ( x_u ... x_1 x_0 u -- x_u ... x_1 x_0 x_u )
+	1+			( add one because of 'u' on the stack )
+	2 *			( multiply by the word size )
+	DSP@ +		( add to the stack pointer )
+	@    		( and fetch )
+;
+
+: SPACES	( n -- )
+	BEGIN
+		DUP 0>		( while n > 0 )
+	WHILE
+		SPACE		( print a space )
+		1-		( until we count down to 0 )
+	REPEAT
+	DROP
+;
+
 : DECIMAL ( -- ) 10 BASE ! ;
 : HEX ( -- ) 16 BASE ! ;
+
+( ? fetches the integer at an address and prints it. )
+: ? ( addr -- ) @ . ;
+
+( c a b WITHIN returns true if a <= c and c < b )
+(  or define without ifs: OVER - >R - R>  U<  )
+: WITHIN
+	-ROT		( b c a )
+	OVER		( b c a c )
+	<= -ROT 	( f b c )
+	> AND
+;
+
+: MAX ( a b -- a | b )
+	2DUP < IF SWAP THEN DROP
+;
+
+: MIN ( a b -- a | b )
+	2DUP > IF SWAP THEN DROP
+;
 
 : UNUSED	( -- n )
 	0x8000
