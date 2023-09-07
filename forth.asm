@@ -55,9 +55,9 @@ pushreg .set REG_NONE
     $100 - $1ff    6502 stack
     $200 - $400    input buffer (512 bytes), defined in bootstrap.f
     $400 - $420    WORDBUF - 32 char buffer for "WORD"
-     ... - $7FF    return stack (RP), max 496 cells (~1K bytes)
-     ... - $FFF    data stack (SP), max 1024 cells (2K bytes)
-    $1000 - ...    code, (test), data
+     ... - $5FF    return stack (RP), max 240 cells (480 bytes)
+     ... - $9FF    data stack (SP), max 512 cells (1K bytes)
+    $0A00 - ...    code, (test), data
     $C000 - ...    (optional unit test report)
 */
 
@@ -117,9 +117,9 @@ callword:
         NEXT                    ; go
 
 /*
-lazy stack macros
+A lazy stack
 
-We can take advantage of the fact that nly native words manipulate the stack directly.
+We can take advantage of the fact that only native words manipulate the stack directly.
 Most work by popping from the stack into fixed zeropage registers (AW, BW, ...),
 manipulating those registers, and then pushing back to the stack.
 We can optimize for space (and sometimes speed) by lazily synchronizing

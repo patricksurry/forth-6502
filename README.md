@@ -45,9 +45,10 @@ fake 65c02 https://github.com/omarandlorraine/fake6502/
 TODO
 ---
 
-run on C simulator - how fast?
-track heatmap of code via memory accesses
-could even watch for write to read-only memory tho self-modifying code and data/code intermingling makes it hard
+[x] run on C simulator - how fast?
+[ ] track heatmap of code via memory accesses
+[ ] IO block $f000-f100 (move mfio; implement C version)
+[ ] relocatable / monitor?   could even watch for write to read-only memory tho self-modifying code and data/code intermingling makes it hard
 
 
 https://eater.net/6502
@@ -170,4 +171,6 @@ look for largest words (ex: write in forth)
 
 
 94638 - thru tests; go forth: 13981611 - to ready; approx 12.5s
-13.8 million cycles in 12.5s  ~ 1.1MHz
+13.8 million cycles in 12.5s  ~1.1MHz
+
+fakeforth.c 14M cycles in ~0.11s > 125MHz

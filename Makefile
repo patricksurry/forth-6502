@@ -20,6 +20,13 @@ forth.mon: forth.bin
 	echo "width 72" >> forth.mon
 	echo "goto forth" >> forth.mon
 
+fakeforth: forth.mon fakeforth.c
+	set -e ;\
+	ENTRY=`egrep '^al.*\sforth$$' forth.mon | cut -f2 -d\ ` ;\
+	OFFSET=`grep __MAIN_START__ forth.mon | cut -f2 -d\ ` ;\
+	LAST=`grep __MAIN_LAST__ forth.mon | cut -f2 -d\ ` ;\
+	gcc -DOFFSET=0x$$OFFSET -DENTRY=0x$$ENTRY -DLAST=0x$$LAST -DDECIMALMODE -DCMOS6502 -I../fake6502 -o fakeforth fakeforth.c ../fake6502/fake6502.c
+
 tests: forth-test.bin forth-test.mon forth-test.sym
 	py65mon -m 65C02 -l forth-test.bin -b forth-test.mon -a `grep __MAIN_START__ forth-test.sym | cut -d' '  -f2`
 
