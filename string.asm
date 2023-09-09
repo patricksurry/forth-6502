@@ -164,17 +164,16 @@ parseint:
         ;
         ; AW points to string
         ; LEN contains length
+        ; acc contains radix
         ; on return ERR=0 indicates success, with parsed value in BW
         ; on failure ERR != 0 as # unconverted chars (-1 if fail by exhausting string)
+        sta TMP         ; default radix
         SETWC BW, 0     ; initialize result
         ldy #0          ; character index
         cpy LEN
         beq invalid
         sty FLG         ; sign=0
         sty ERR         ; err=0
-;TODO shouldn't ref this here, pass as ACC?
-        lda BASE_value  ; forth variable value
-        sta TMP         ; default radix
         lda (AW),y
         cmp #'-'
         bne nosign
@@ -313,6 +312,7 @@ test_string:
         lda strint0
         sta LEN
         SETWC AW, strint0+2
+        lda #10
         jsr parseint
         lda ERR
         EXPECTAC 0, "parseint 0"
@@ -320,30 +320,35 @@ test_string:
         lda strint1
         sta LEN
         SETWC AW, strint1+2
+        lda #10
         jsr parseint
         EXPECTWC BW, 1234, "parseint 1"
 
         lda strint2
         sta LEN
         SETWC AW, strint2+2
+        lda #10
         jsr parseint
         EXPECTWC BW, -456, "parseint 2"
 
         lda strint3
         sta LEN
         SETWC AW, strint3+2
+        lda #10
         jsr parseint
         EXPECTWC BW, 42, "parseint 3"
 
         lda strint4
         sta LEN
         SETWC AW, strint4+2
+        lda #10
         jsr parseint
         EXPECTWC BW, -492, "parseint 4"
 
         lda strint5
         sta LEN
         SETWC AW, strint5+2
+        lda #10
         jsr parseint
         EXPECTWC BW, 48813, "parseint 5"
 

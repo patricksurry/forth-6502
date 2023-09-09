@@ -1,4 +1,6 @@
-\ comment
+\/
+\ this bootstrap code is compiled on top of itself
+\ the initial \/ ($5c, $2f) is used to detect whether we've already compiled
 
 HERE @
 
@@ -309,9 +311,9 @@ _MFIO 8 + CONSTANT FC_OFFSET  \ IO(4): 32-bit offset for seek/tell (read/write)
 
 : (input-buffer) 0x200 0x200 ;		\ addr and length of fixed input buffer
 
-8 CELLS ALLOT CONSTANT (SOURCE-IDS) 		\ stack of pending source ids
+8 CELLS ALLOT CONSTANT (SOURCE-IDS) \ stack of pending source ids
 0 (SOURCE-IDS) !					\ user input is next up
--1 TO SOURCE-ID						\ current input is from eval buffer (this file in memory)
+-1 VALUE SOURCE-ID					\ current input is from eval buffer (this file in memory)
 
 : (NEXT-SOURCE) ( -- )				\ shrink the list
 	(SOURCE-IDS) DUP @ TO SOURCE-ID

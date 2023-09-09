@@ -7,6 +7,7 @@
 
 uint8_t memory[65536];
 int rws[65536];
+int writes[65536];
 
 int mfio = 0;
 
@@ -21,6 +22,7 @@ uint8_t fake6502_mem_read(fake6502_context *c, uint16_t addr) {
 void fake6502_mem_write(fake6502_context *c, uint16_t addr, uint8_t val) {
     if (addr == 0xf0) mfio++;
     rws[addr] += 1;
+    writes[addr] += 1;
     if (addr == 0xf001) putc((int)val, stdout);
     memory[addr] = val;
 }
@@ -45,4 +47,9 @@ int main(int argc, char* argv[]) {
     fout = fopen("forth-coverage.dat", "wb");
     fwrite(rws, sizeof(int), 65536, fout);
     fclose(fout);
+
+    fout = fopen("forth-writes.dat", "wb");
+    fwrite(writes, sizeof(int), 65536, fout);
+    fclose(fout);
+
 }
